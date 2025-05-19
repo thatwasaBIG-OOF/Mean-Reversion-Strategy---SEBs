@@ -1,0 +1,90 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"] # Build system dependencies
+build-backend = "setuptools.build_meta"
+# backend-path = ["."] # This line was causing the original error; ensure it's removed or commented.
+
+[project]
+name = "tsxapipy" # The name used for PyPI and pip install
+version = "0.3.3" # << KEEP THIS IN SYNC WITH YOUR tsxapipy/__init__.py __version__
+authors = [
+    { name = "Your Name", email = "your.email@example.com" }, # Replace with your details
+]
+description = "A Python library for interacting with the TopStepX (ProjectX) trading API, providing tools for authentication, data retrieval, real-time streaming, and order management."
+readme = "README.md" # Path to your README file
+requires-python = ">=3.8" # Minimum Python version supported
+license = "Apache-2.0" # SPDX identifier for Apache 2.0
+license-files = ["LICENSE"] # Assumes you have a LICENSE file in the root
+keywords = ["topstep", "topstepx", "projectx", "trading", "api", "finance", "futures"]
+classifiers = [
+    "Development Status :: 3 - Alpha", # Or "4 - Beta" when more stable
+    "Intended Audience :: Developers",
+    "Intended Audience :: Financial and Insurance Industry",
+    # "License :: OSI Approved :: Apache Software License", # This is now covered by `license = "Apache-2.0"`
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Operating System :: OS Independent",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Office/Business :: Financial :: Investment",
+]
+
+dependencies = [
+    "requests>=2.25.0,<3.0.0",
+    "python-dotenv>=0.19.0,<1.1.0",
+    "pandas>=1.3.0,<2.3.0",
+    "pyarrow>=7.0.0,<17.0.0",
+    "pytz>=2021.1",
+    "signalrcore>=0.1.6,<0.2.0" # Crucial: ensure this version matches your development
+]
+
+[project.urls]
+Homepage = "https://github.com/yourusername/tsxapipy" # Replace with your actual repo URL
+Repository = "https://github.com/yourusername/tsxapipy"
+# Documentation = "https://yourusername.github.io/tsxapipy" # If you host docs
+
+# Optional: Entry points for CLI scripts
+# This allows users to run your scripts directly from the command line after installation
+# For example, `fetch-historical-data --help` instead of `python scripts/fetch_historical_cli.py --help`
+[project.scripts]
+# fetch-historical-data = "tsxapipy.scripts.fetch_historical_cli:main" # Example
+# market-data-tester = "tsxapipy.scripts.market_data_tester_cli:main"
+# order-watcher = "tsxapipy.scripts.order_watcher_cli:main"
+# dump-accounts = "tsxapipy.scripts.dump_accounts_cli:main"
+# trading-bot-example = "tsxapipy.scripts.trading_bot_cli:main"
+# Note: To use this, your scripts must be importable modules (e.g., tsxapipy.scripts.script_name)
+# This usually means having an __init__.py in the scripts folder if you make it a sub-package,
+# or adjusting the path here if scripts are moved into the main tsxapipy package.
+# For simplicity, if scripts are just in a top-level `scripts` folder (not part of the installable package),
+# users would run them with `python -m tsxapipy.scripts.script_name` if scripts are made part of the package,
+# or just `python scripts/script_name.py` from the repo.
+# If you want to make them proper entry points, you'd typically move the scripts into your `src/tsxapipy/`
+# directory, perhaps under a `src/tsxapipy/cli/` subpackage.
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=6.2.0,<8.0.0",
+    "flake8>=3.9.0,<7.0.0",
+    "black>=21.5b0,<25.0.0",
+    "mypy>=0.900,<1.10.0",
+    "build>=0.7.0", # For building packages
+    "twine>=3.4.0", # For uploading to PyPI
+]
+docs = [
+    "sphinx>=4.0.0,<8.0.0",
+    "sphinx-rtd-theme>=1.0.0,<2.0.0",
+    "sphinx-autodoc-typehints>=1.12.0,<2.0.0",
+    "napoleon>=0.7,<0.8", # For Google/NumPy style docstrings
+    "sphinx-copybutton>=0.4.0,<0.6.0",
+]
+
+# --- Setuptools specific configuration (can often be minimal with pyproject.toml) ---
+[tool.setuptools.packages.find]
+where = ["src"]  # Tells setuptools your packages are under the 'src' directory
+# include = ["tsxapipy*"] # You can be more explicit if needed, but usually finds it
+namespaces = false # Typically false for src-layout
+
+# If you have data files to include that are part of your package (not typical for this library)
+# [tool.setuptools.package-data]
+# tsxapipy = ["*.json", "data_files/*"]
