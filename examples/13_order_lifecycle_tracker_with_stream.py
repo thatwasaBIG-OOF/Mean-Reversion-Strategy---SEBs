@@ -17,14 +17,17 @@ from tsxapipy import (
     AuthenticationError,
     ConfigurationError,
     APIError,
+    LibraryError, # Added
+    # StreamConnectionState, # Not directly used in this script's logic but good to be aware of
     DEFAULT_CONFIG_CONTRACT_ID,
     DEFAULT_CONFIG_ACCOUNT_ID_TO_WATCH,
-    ORDER_STATUS_TO_STRING_MAP, # For logging status
+    ORDER_STATUS_TO_STRING_MAP, 
     ORDER_STATUS_FILLED,
     ORDER_STATUS_CANCELLED,
     ORDER_STATUS_REJECTED,
     ORDER_STATUS_WORKING
 )
+from tsxapipy.api.exceptions import APIResponseParsingError # Added
 
 # --- Configure Logging ---
 logging.basicConfig(
@@ -38,9 +41,9 @@ logger = logging.getLogger("OrderLifecycleTrackerExample")
 tracked_order_id: Optional[int] = None
 tracked_order_status_from_stream: Optional[int] = None
 tracked_order_details_from_stream: Optional[Dict[str, Any]] = None
-is_order_terminal: bool = False # Flag to stop main loop once order is filled/cancelled/rejected
+is_order_terminal: bool = False 
 
-def handle_tracked_order_update(order_data: Any):
+def handle_tracked_order_update(order_data: Any): # order_data is Dict from stream
     global tracked_order_id, tracked_order_status_from_stream, tracked_order_details_from_stream, is_order_terminal
     
     order_id_from_event = order_data.get("id")
@@ -60,23 +63,28 @@ def handle_tracked_order_update(order_data: Any):
         tracked_order_details_from_stream = order_data
 
         if status_code in [ORDER_STATUS_FILLED, ORDER_STATUS_CANCELLED, ORDER_STATUS_REJECTED]:
-            logger.info(f"Tracked order {tracked_order_id} reached terminal state: {status_str}. Stopping monitoring for this order.")
+            logger.info(f"Tracked order {tracked_order_id} reached terminal state: {status_str}. Loop will end if not already.")
             is_order_terminal = True
     else:
-        # Log other order updates if needed, but don't act on them for this example's focus
         logger.debug(f"Received update for non-tracked order ID: {order_id_from_event}")
 
 
-def handle_user_stream_state(state: str):
-    logger.info(f"UserHubStream state changed to: {state}")
+def handle_user_stream_state(state_str: str): # state_str is the name of StreamConnectionState enum
+    logger.info(f"UserHubStream state changed to: {state_str}")
 
 def handle_user_stream_error(error: Any):
     logger.error(f"UserHubStream error: {error}")
 
 
 def run_order_lifecycle_example(contract_id: str, account_id: int, limit_price_offset: float = -10.0):
-    global tracked_order_id, is_order_terminal
+    global tracked_order_id, is_order_terminal # Allow modification of globals
     
+    # Reset global state for multiple runs in the same process (if any)
+    tracked_order_id = None
+    is_order_terminal = False
+    # tracked_order_status_from_stream = None # Not strictly needed to reset if logic handles None
+    # tracked_order_details_from_stream = None
+
     logger.info(f"--- Example: Order Lifecycle Tracker via UserHubStream ---")
     logger.info(f"Contract: {contract_id}, Account: {account_id}, Price Offset for Limit: {limit_price_offset}")
 
@@ -84,17 +92,13 @@ def run_order_lifecycle_example(contract_id: str, account_id: int, limit_price_o
     order_placer: Optional[OrderPlacer] = None
     user_stream: Optional[UserHubStream] = None
 
-    # Determine a far-out limit price
-    # This is a very naive way to get a price; in a real app, you'd get current market price.
-    # For NQ, an offset of -10.0 from an arbitrary high number should be safe.
-    # For other contracts, this price might be too high or too low.
-    base_price_for_limit = 18000.0 # Placeholder for NQ-like contract
+    base_price_for_limit = 18000.0 
     if "CL" in contract_id.upper(): base_price_for_limit = 70.0
     elif "GC" in contract_id.upper(): base_price_for_limit = 2000.0
-    
+    elif "ES" in contract_id.upper(): base_price_for_limit = 5000.0
+
     target_limit_price = base_price_for_limit + limit_price_offset
     logger.info(f"Calculated target limit price for BUY order: {target_limit_price}")
-
 
     try:
         logger.info("Authenticating...")
@@ -106,42 +110,40 @@ def run_order_lifecycle_example(contract_id: str, account_id: int, limit_price_o
         order_placer = OrderPlacer(api_client, account_id, default_contract_id=contract_id)
         logger.info("OrderPlacer initialized.")
 
-        # Setup UserHubStream
         logger.info(f"Initializing UserHubStream for account: {account_id}")
         user_stream = UserHubStream(
             api_client=api_client,
             account_id_to_watch=account_id,
             on_order_update=handle_tracked_order_update,
-            subscribe_to_accounts_globally=False, # We only care about orders for this account
+            subscribe_to_accounts_globally=False, 
             on_state_change_callback=handle_user_stream_state,
             on_error_callback=handle_user_stream_error
         )
         if not user_stream.start():
-            logger.error("Failed to start UserHubStream. Exiting.")
+            logger.error(f"Failed to start UserHubStream (current status: {user_stream.connection_status.name if user_stream else 'N/A'}). Exiting.")
             return
-        logger.info("UserHubStream started.")
-        time.sleep(2) # Give stream a moment to fully connect and send initial subscriptions
+        logger.info("UserHubStream start initiated.")
+        time.sleep(2) 
 
-        # Place the test order
         logger.info(f"Placing LIMIT BUY order: 1 lot of {contract_id} at {target_limit_price} on account {account_id}...")
-        placed_order_id = order_placer.place_limit_order(
+        # OrderPlacer.place_limit_order signature is the same
+        current_placed_order_id = order_placer.place_limit_order(
             side="BUY", 
             size=1, 
             limit_price=target_limit_price,
             contract_id=contract_id
         )
 
-        if not placed_order_id:
+        if not current_placed_order_id:
             logger.error("Failed to place the initial test order. Exiting example.")
-            if user_stream: user_stream.stop()
+            if user_stream: user_stream.stop(reason_for_stop="Order placement failed")
             return
         
-        tracked_order_id = placed_order_id
+        tracked_order_id = current_placed_order_id # Set global for callback
         logger.info(f"Test order placed successfully! Order ID to track: {tracked_order_id}. Monitoring stream for updates...")
 
-        # Monitor for a while, then attempt to cancel
-        monitoring_duration_before_cancel = 20 # seconds
-        cancel_attempt_timeout = 15 # seconds to wait for cancel confirmation
+        monitoring_duration_before_cancel = 20 
+        cancel_attempt_timeout = 15 
         
         start_monitor_time = time.monotonic()
         while time.monotonic() - start_monitor_time < monitoring_duration_before_cancel:
@@ -154,6 +156,7 @@ def run_order_lifecycle_example(contract_id: str, account_id: int, limit_price_o
         
         if not is_order_terminal:
             logger.info(f"\nAttempting to cancel order {tracked_order_id}...")
+            # OrderPlacer.cancel_order signature is the same
             cancel_success = order_placer.cancel_order(order_id=tracked_order_id)
             if cancel_success:
                 logger.info(f"Cancel request for order {tracked_order_id} submitted. Waiting for stream confirmation...")
@@ -163,20 +166,19 @@ def run_order_lifecycle_example(contract_id: str, account_id: int, limit_price_o
                     if is_order_terminal and tracked_order_status_from_stream == ORDER_STATUS_CANCELLED:
                         logger.info(f"Order {tracked_order_id} successfully confirmed as CANCELLED via stream.")
                         break
-                    elif is_order_terminal: # Filled or Rejected instead of Cancelled
+                    elif is_order_terminal: 
                         logger.warning(f"Order {tracked_order_id} became terminal with status "
-                                       f"{ORDER_STATUS_TO_STRING_MAP.get(tracked_order_status_from_stream)} "
+                                       f"{ORDER_STATUS_TO_STRING_MAP.get(tracked_order_status_from_stream, 'N/A')} "
                                        f"during/after cancel attempt.")
                         break
                     time.sleep(0.5)
-                else: # Timeout waiting for cancel confirmation
+                else: 
                     logger.warning(f"Timed out waiting for cancellation confirmation for order {tracked_order_id} via stream. "
                                    f"Last known stream status: {ORDER_STATUS_TO_STRING_MAP.get(tracked_order_status_from_stream, 'N/A')}")
             else:
                 logger.error(f"Failed to submit cancel request for order {tracked_order_id} via OrderPlacer.")
-                # Order might have already become terminal, check last known stream status
                 if is_order_terminal:
-                    logger.info(f"  Order was already terminal with status: {ORDER_STATUS_TO_STRING_MAP.get(tracked_order_status_from_stream)}")
+                    logger.info(f"  Order was already terminal with status: {ORDER_STATUS_TO_STRING_MAP.get(tracked_order_status_from_stream, 'N/A')}")
 
         logger.info("\nFinal details of tracked order from stream events:")
         if tracked_order_details_from_stream:
@@ -184,26 +186,32 @@ def run_order_lifecycle_example(contract_id: str, account_id: int, limit_price_o
         else:
             logger.info("No stream updates were captured for the tracked order ID.")
 
-    except ConfigurationError as e:
-        logger.error(f"CONFIGURATION ERROR: {e}")
-    except AuthenticationError as e:
-        logger.error(f"AUTHENTICATION FAILED: {e}")
-    except APIError as e:
-        logger.error(f"API ERROR: {e}")
+    except ConfigurationError as e_conf:
+        logger.error(f"CONFIGURATION ERROR: {e_conf}")
+    except AuthenticationError as e_auth:
+        logger.error(f"AUTHENTICATION FAILED: {e_auth}")
+    except APIResponseParsingError as e_parse: 
+        logger.error(f"API RESPONSE PARSING ERROR (likely during auth or order placement): {e_parse}")
+        if e_parse.raw_response_text:
+            logger.error("Raw problematic response text (preview): %s", e_parse.raw_response_text[:500])
+    except APIError as e_api:
+        logger.error(f"API ERROR: {e_api}")
+    except LibraryError as e_lib:
+        logger.error(f"LIBRARY ERROR: {e_lib}")
     except KeyboardInterrupt:
         logger.info("Keyboard interrupt received. Shutting down...")
-        if tracked_order_id and not is_order_terminal and order_placer:
+        if tracked_order_id and not is_order_terminal and order_placer: # Check if order_placer was initialized
             logger.warning(f"Order {tracked_order_id} might still be active. Attempting to cancel due to interrupt...")
             if order_placer.cancel_order(tracked_order_id):
                 logger.info("Cancel request for lingering order sent.")
             else:
                 logger.error("Failed to send cancel for lingering order.")
-    except Exception as e:
-        logger.error(f"AN UNEXPECTED ERROR OCCURRED: {e}", exc_info=True)
+    except Exception as e_generic:
+        logger.error(f"AN UNEXPECTED ERROR OCCURRED: {e_generic}", exc_info=True)
     finally:
         if user_stream:
-            logger.info("Stopping UserHubStream...")
-            user_stream.stop()
+            logger.info(f"Stopping UserHubStream (current status: {user_stream.connection_status.name})...")
+            user_stream.stop(reason_for_stop="Example script finishing")
         logger.info("Order lifecycle tracker example finished.")
 
 if __name__ == "__main__":
@@ -217,13 +225,13 @@ if __name__ == "__main__":
     parser.add_argument(
         "--account_id", 
         type=int, 
-        default=DEFAULT_CONFIG_ACCOUNT_ID_TO_WATCH,
+        default=int(DEFAULT_CONFIG_ACCOUNT_ID_TO_WATCH) if DEFAULT_CONFIG_ACCOUNT_ID_TO_WATCH else 0,
         help="Account ID to place the order on."
     )
     parser.add_argument(
         "--price_offset",
         type=float,
-        default=-20.0, # Default to 20 points below an assumed base for NQ
+        default=-20.0, 
         help="Price offset from a base price to set the limit order (e.g., -10 for 10 points below base)."
     )
     parser.add_argument(

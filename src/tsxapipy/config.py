@@ -81,28 +81,30 @@ selected_urls = URL_SETS[TRADING_ENV_SETTING]
 API_KEY = os.getenv("API_KEY")
 USERNAME = os.getenv("USERNAME")
 
-# --- Proactive Essential Config Check ---
+# --- Modified Config Check: Warn instead of raising error immediately ---
+# The authenticate() function will now be responsible for raising ConfigurationError
+# if credentials are not provided either as arguments or found in these config vars.
 if not API_KEY:
     # pylint: disable=import-outside-toplevel
-    from tsxapipy.api.exceptions import ConfigurationError
+    # from tsxapipy.api.exceptions import ConfigurationError # Error raising moved to authenticate()
     msg = (
-        "CRITICAL CONFIGURATION ERROR: API_KEY is missing. "
-        "Please ensure it is set in your .env file or as an environment variable."
+        "Config WARNING: API_KEY is not set in .env file or environment variables. "
+        "Authentication will fail unless API_KEY is provided programmatically to authenticate()."
     )
-    logger.error(msg)
-    raise ConfigurationError(msg)
+    logger.warning(msg)
+    # raise ConfigurationError(msg) # Removed raise
 
 if not USERNAME:
     # pylint: disable=import-outside-toplevel
-    from tsxapipy.api.exceptions import ConfigurationError
+    # from tsxapipy.api.exceptions import ConfigurationError # Error raising moved to authenticate()
     msg = (
-        "CRITICAL CONFIGURATION ERROR: USERNAME is missing. "
-        "Please ensure it is set in your .env file or as an environment variable."
+        "Config WARNING: USERNAME is not set in .env file or environment variables. "
+        "Authentication will fail unless USERNAME is provided programmatically to authenticate()."
     )
-    logger.error(msg)
-    raise ConfigurationError(msg)
+    logger.warning(msg)
+    # raise ConfigurationError(msg) # Removed raise
 
-# Now log the active environment since critical checks passed
+# Now log the active environment
 logger.info("Config: TRADING_ENVIRONMENT active: '%s'.", TRADING_ENV_SETTING)
 
 
@@ -142,7 +144,17 @@ DEFAULT_TOKEN_LIFETIME_HOURS = float(os.getenv("DEFAULT_TOKEN_LIFETIME_HOURS", "
 # --- Logging of final effective configuration values ---
 def _log_config_var(var_name: str, var_value: Any,
                     is_sensitive: bool = False, is_url: bool = False):
-    """Helper to log configuration variables, obscuring sensitive ones."""
+    """
+    Helper function to log configuration variables, obscuring sensitive ones.
+
+    Args:
+        var_name (str): The name of the configuration variable.
+        var_value (Any): The value of the configuration variable.
+        is_sensitive (bool, optional): If True, the value will be obscured in logs.
+                                       Defaults to False.
+        is_url (bool, optional): If True, logs at INFO level, otherwise DEBUG
+                                 (unless TRADING_ENV_SETTING). Defaults to False.
+    """
     if var_value is not None:
         val_str = str(var_value)
         display_value = val_str
@@ -158,8 +170,8 @@ def _log_config_var(var_name: str, var_value: Any,
 
 logger.info("--- Effective Runtime Configuration ---")
 _log_config_var("TRADING_ENV_SETTING", TRADING_ENV_SETTING)
-_log_config_var("API_KEY", API_KEY, is_sensitive=True)
-_log_config_var("USERNAME", USERNAME)
+_log_config_var("API_KEY", API_KEY, is_sensitive=True) # Kept original logging for these
+_log_config_var("USERNAME", USERNAME)                 # as they still represent the config-loaded values
 _log_config_var("API_URL", API_URL, is_url=True)
 _log_config_var("MARKET_HUB_URL", MARKET_HUB_URL, is_url=True)
 _log_config_var("USER_HUB_URL", USER_HUB_URL, is_url=True)

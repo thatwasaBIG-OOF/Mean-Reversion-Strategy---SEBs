@@ -69,6 +69,32 @@ class APIResponseError(APIError):
     def __str__(self):
         return f"{super().__str__()} (API Error Code: {self.error_code})"
 
+class APIResponseParsingError(APIError): # New Exception Class
+    """
+    Raised when the API response content cannot be successfully parsed or validated
+    against the expected Pydantic model or data structure.
+
+    This typically indicates a mismatch between the expected API response schema
+    and the actual data received, or malformed JSON.
+
+    Attributes:
+        raw_response_text (Optional[str]): The raw response text, if available,
+                                           to aid in debugging the parsing issue.
+    """
+    def __init__(self, message: str, raw_response_text: Optional[str] = None):
+        super().__init__(message)
+        self.raw_response_text = raw_response_text
+
+    def __str__(self):
+        if self.raw_response_text:
+            # Provide a preview of the raw text to avoid overly long error messages
+            preview_limit = 250
+            text_preview = self.raw_response_text[:preview_limit]
+            if len(self.raw_response_text) > preview_limit:
+                text_preview += "..."
+            return f"{super().__str__()} | Raw Response Text (preview): {text_preview}"
+        return super().__str__()
+
 # --- Specific API Response Error Subclasses (ensure they inherit from APIResponseError or APIError) ---
 
 class ContractNotFoundError(APIResponseError): # Or APIError if it can come from HTTP 404
@@ -126,3 +152,12 @@ class MaxPositionLimitError(APIResponseError):
 class MarketClosedError(APIResponseError):
     """API indicates the market for the instrument is currently closed for trading."""
     pass
+
+# It's good practice to define __all__ if this module is intended for broader import use
+__all__ = [
+    "LibraryError", "ConfigurationError", "APIError", "AuthenticationError",
+    "APITimeoutError", "APIHttpError", "APIResponseError", "APIResponseParsingError",
+    "ContractNotFoundError", "InvalidParameterError", "RateLimitExceededError",
+    "InsufficientFundsError", "OrderNotFoundError", "OrderRejectedError",
+    "MaxPositionLimitError", "MarketClosedError"
+]

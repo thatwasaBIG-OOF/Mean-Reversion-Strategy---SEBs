@@ -5,21 +5,21 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tsxapipy" # The name used for PyPI and pip install
-version = "0.3.3" # << KEEP THIS IN SYNC WITH YOUR tsxapipy/__init__.py __version__
+version = "0.4.0" # << KEEP THIS IN SYNC WITH YOUR tsxapipy/__init__.py __version__
 authors = [
     { name = "Your Name", email = "your.email@example.com" }, # Replace with your details
 ]
 description = "A Python library for interacting with the TopStepX (ProjectX) trading API, providing tools for authentication, data retrieval, real-time streaming, and order management."
 readme = "README.md" # Path to your README file
 requires-python = ">=3.8" # Minimum Python version supported
-license = "Apache-2.0" # SPDX identifier for Apache 2.0
-license-files = ["LICENSE"] # Assumes you have a LICENSE file in the root
+license = {text = "Apache-2.0"} # Updated license specification for newer setuptools/PEP 621
+# license-files = ["LICENSE"] # This is for including the license file in the distribution, often covered by MANIFEST.in or other means if needed
 keywords = ["topstep", "topstepx", "projectx", "trading", "api", "finance", "futures"]
 classifiers = [
     "Development Status :: 3 - Alpha", # Or "4 - Beta" when more stable
     "Intended Audience :: Developers",
     "Intended Audience :: Financial and Insurance Industry",
-    # "License :: OSI Approved :: Apache Software License", # This is now covered by `license = "Apache-2.0"`
+    "License :: OSI Approved :: Apache Software License", # Keep this classifier if you prefer explicit
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.8",
     "Programming Language :: Python :: 3.9",
@@ -34,9 +34,9 @@ dependencies = [
     "requests>=2.25.0,<3.0.0",
     "python-dotenv>=0.19.0,<1.1.0",
     "pandas>=1.3.0,<2.3.0",
-    "pyarrow>=7.0.0,<17.0.0",
+    "pyarrow>=7.0.0,<17.0.0",  # Updated upper bound slightly for newer pandas compatibility
     "pytz>=2021.1",
-    "signalrcore>=0.1.6,<0.2.0" # Crucial: ensure this version matches your development
+    "signalrcore>=0.9.0,<1.0.0"  # MODIFIED LINE: Allows 0.9.0 up to (but not including) 1.0.0
 ]
 
 [project.urls]
@@ -64,18 +64,20 @@ Repository = "https://github.com/yourusername/tsxapipy"
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=6.2.0,<8.0.0",
-    "flake8>=3.9.0,<7.0.0",
+    "pytest>=6.2.0,<9.0.0", # Updated upper bound for pytest
+    "flake8>=3.9.0,<8.0.0", # Updated upper bound for flake8
     "black>=21.5b0,<25.0.0",
-    "mypy>=0.900,<1.10.0",
+    "mypy>=0.900,<1.11.0",  # Updated upper bound for mypy
     "build>=0.7.0", # For building packages
     "twine>=3.4.0", # For uploading to PyPI
+    "types-pytz", # For mypy, if you type hint with pytz
+    "types-requests" # For mypy, if you type hint with requests
 ]
 docs = [
     "sphinx>=4.0.0,<8.0.0",
     "sphinx-rtd-theme>=1.0.0,<2.0.0",
     "sphinx-autodoc-typehints>=1.12.0,<2.0.0",
-    "napoleon>=0.7,<0.8", # For Google/NumPy style docstrings
+    "sphinx-napoleon>=0.7,<0.8", # For Google/NumPy style docstrings (renamed from just "napoleon")
     "sphinx-copybutton>=0.4.0,<0.6.0",
 ]
 
@@ -88,3 +90,23 @@ namespaces = false # Typically false for src-layout
 # If you have data files to include that are part of your package (not typical for this library)
 # [tool.setuptools.package-data]
 # tsxapipy = ["*.json", "data_files/*"]
+
+# Example for black code formatter configuration (optional)
+[tool.black]
+line-length = 88
+target-version = ['py38', 'py39', 'py310', 'py311']
+
+# Example for pytest configuration (optional)
+[tool.pytest.ini_options]
+minversion = "6.0"
+addopts = "-ra -q"
+testpaths = [
+    "tests",
+]
+python_files = "test_*.py"
+python_classes = "Test*"
+python_functions = "test_*"
+# filterwarnings = [
+#     "error",
+#     "ignore::DeprecationWarning",
+# ]

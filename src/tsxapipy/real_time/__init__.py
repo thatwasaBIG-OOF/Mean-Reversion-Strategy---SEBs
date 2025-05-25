@@ -7,11 +7,13 @@ It includes:
 - DataStream: For market data like quotes, trades, and market depth.
 - UserHubStream: For user-specific data like account updates, orders,
                  positions, and user trade executions.
+- StreamConnectionState: Enum for common stream connection states.
 """
-from .data_stream import DataStream
-from .user_hub_stream import UserHubStream # Ensure this matches the renamed class file
+from .data_stream import DataStream, StreamConnectionState # Import StreamConnectionState from data_stream
+from .user_hub_stream import UserHubStream 
 
 __all__ = [
     "DataStream",
     "UserHubStream",
+    "StreamConnectionState", # Add StreamConnectionState to __all__
 ]

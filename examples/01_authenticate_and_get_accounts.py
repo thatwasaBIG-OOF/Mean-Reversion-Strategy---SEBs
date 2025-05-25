@@ -5,8 +5,8 @@ This script demonstrates:
 1. Importing necessary components from the tsxapipy library.
 2. Authenticating with the API using credentials from the .env file.
 3. Initializing the APIClient.
-4. Fetching and displaying all accounts.
-5. Fetching and displaying only active accounts.
+4. Fetching and displaying all accounts, now using Pydantic models.
+5. Fetching and displaying only active accounts, now using Pydantic models.
 """
 # pylint: disable=invalid-name  # Allow filename for example script
 import sys
@@ -23,7 +23,8 @@ if src_path not in sys.path:
 
 from tsxapipy.auth import authenticate
 from tsxapipy.api import APIClient, APIError, AuthenticationError
-from tsxapipy.api.exceptions import ConfigurationError, LibraryError
+from tsxapipy.api.exceptions import ConfigurationError, LibraryError, APIResponseParsingError
+from tsxapipy import api_schemas # Import the schemas module
 
 # --- Configure Logging ---
 # Basic configuration for the example script's output
@@ -37,42 +38,46 @@ logger = logging.getLogger(__name__) # Logger for this specific example script
 
 def run_example():
     """Runs the example for authenticating and fetching accounts."""
-    logger.info("--- Example 01: Authenticate and Get Accounts ---")
+    logger.info("--- Example 01: Authenticate and Get Accounts (Using Pydantic Models) ---")
     api_client: Optional[APIClient] = None
     try:
         # 1. Authenticate
-        # This step now might raise ConfigurationError if API_KEY or USERNAME are missing,
-        # as config.py and auth.py implement these checks.
         logger.info("Attempting authentication...")
         initial_token, token_acquired_at = authenticate()
         logger.info("Authentication successful. Token acquired at: %s",
                     token_acquired_at.isoformat())
 
         # 2. Create APIClient instance
-        # APIClient.__init__ raises ValueError for bad token/datetime.
         api_client = APIClient(initial_token=initial_token,
                                token_acquired_at=token_acquired_at)
         logger.info("APIClient initialized.")
 
         # 3. Get Account Details
         logger.info("Fetching all accounts (including inactive)...")
-        all_accounts = api_client.get_accounts(only_active=False)
+        # api_client.get_accounts() now returns List[api_schemas.Account]
+        all_accounts: List[api_schemas.Account] = api_client.get_accounts(only_active=False)
+        
         if all_accounts:
             logger.info("Found %d total accounts:", len(all_accounts))
-            for acc in all_accounts:
+            for acc_model in all_accounts: # Iterate over Pydantic models
                 logger.info("  ID: %s, Name: %s, Balance: %s, CanTrade: %s, Visible: %s",
-                            acc.get('id'), acc.get('name'), acc.get('balance'),
-                            acc.get('canTrade'), acc.get('isVisible'))
+                            acc_model.id,
+                            acc_model.name if acc_model.name is not None else "N/A",
+                            f"{acc_model.balance:.2f}" if acc_model.balance is not None else "N/A",
+                            acc_model.can_trade if acc_model.can_trade is not None else "N/A",
+                            acc_model.is_visible if acc_model.is_visible is not None else "N/A")
         else:
             logger.info("No accounts found (when fetching all).")
 
         logger.info("\nFetching only active accounts...")
-        active_accounts = api_client.get_accounts(only_active=True)
+        active_accounts: List[api_schemas.Account] = api_client.get_accounts(only_active=True)
         if active_accounts:
             logger.info("Found %d active accounts:", len(active_accounts))
-            for acc in active_accounts:
+            for acc_model in active_accounts:
                 logger.info("  ID: %s, Name: %s, Balance: %s",
-                            acc.get('id'), acc.get('name'), acc.get('balance'))
+                            acc_model.id,
+                            acc_model.name if acc_model.name is not None else "N/A",
+                            f"{acc_model.balance:.2f}" if acc_model.balance is not None else "N/A")
         else:
             logger.info("No active accounts found.")
 
@@ -82,9 +87,13 @@ def run_example():
                      "your .env file (located at the project root).")
     except AuthenticationError as e:
         logger.error("AUTHENTICATION FAILED: %s", e)
+    except APIResponseParsingError as e_parse: # Catch Pydantic validation errors from APIClient
+        logger.error("API RESPONSE PARSING ERROR: %s", e_parse)
+        if e_parse.raw_response_text:
+            logger.error("Raw problematic response text (preview): %s", e_parse.raw_response_text[:500])
     except APIError as e: # Catches other API-related errors from APIClient
         logger.error("API ERROR: %s", e)
-    except ValueError as e: # For other ValueErrors
+    except ValueError as e: # For other ValueErrors (e.g., during APIClient init)
         logger.error("VALUE ERROR: %s (This might indicate an issue with data "
                      "passed to a function or an unexpected internal value).", e)
     except LibraryError as e: # Catch any other library-specific error not caught above

@@ -15,6 +15,7 @@ from .exceptions import (
     APITimeoutError,
     APIHttpError,
     APIResponseError,
+    APIResponseParsingError, # Added APIResponseParsingError
     ContractNotFoundError,
     InvalidParameterError,
     RateLimitExceededError,
@@ -39,6 +40,7 @@ __all__ = [
     "APITimeoutError",
     "APIHttpError",
     "APIResponseError",
+    "APIResponseParsingError", # Added APIResponseParsingError
     "ContractNotFoundError",
     "InvalidParameterError",
     "RateLimitExceededError",

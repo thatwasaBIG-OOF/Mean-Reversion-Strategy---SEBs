@@ -18,41 +18,49 @@ from typing import Optional, Any
 
 from tsxapipy.auth import authenticate, AuthenticationError
 from tsxapipy.api import APIClient, APIError
-from tsxapipy.real_time import DataStream
+from tsxapipy.real_time import DataStream, StreamConnectionState # Added StreamConnectionState
 from tsxapipy.config import CONTRACT_ID as DEFAULT_CONTRACT_ID
-from tsxapipy.api.exceptions import ConfigurationError, LibraryError
+from tsxapipy.api.exceptions import ConfigurationError, LibraryError, APIResponseParsingError # Added
 
-logger = logging.getLogger(__name__)
+# Configure logging for the CLI script
+logging.basicConfig( # BasicConfig should be called only once at the application entry point
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s [%(levelname)s]: %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S',
+    # force=True # force=True can be useful if other parts of library also call basicConfig
+)
+logger = logging.getLogger(__name__) # Use __name__ for script-specific logger
+
 
 # pylint: disable=global-statement
 current_contract_id_testing: str = ""
 
 def handle_quote_data(quote_payload: Any):
     """Callback for quote data from the stream."""
-    logger.info("--- Received GatewayQuote for %s ---", current_contract_id_testing)
-    logger.info(pprint.pformat(quote_payload, indent=2, width=120))
+    logger.info("--- Received GatewayQuote for %s ---", current_contract_id_testing or "N/A")
+    logger.info(pprint.pformat(quote_payload, indent=1, width=100, compact=True))
 
 def handle_optional_trade_data(trade_payload: Any):
     """Callback for trade data from the stream."""
     logger.info("--- Received GatewayTrade (Optional) for %s ---",
-                current_contract_id_testing)
-    logger.info(pprint.pformat(trade_payload, indent=2, width=120))
+                current_contract_id_testing or "N/A")
+    logger.info(pprint.pformat(trade_payload, indent=1, width=100, compact=True))
 
 def handle_optional_depth_data(depth_payload: Any):
     """Callback for depth data from the stream."""
     logger.info("--- Received GatewayDepth (Optional) for %s ---",
-                current_contract_id_testing)
-    logger.info(pprint.pformat(depth_payload, indent=2, width=120))
+                current_contract_id_testing or "N/A")
+    logger.info(pprint.pformat(depth_payload, indent=1, width=100, compact=True))
 
-def handle_cli_stream_state_change(state: str):
+def handle_cli_stream_state_change(state_str: str): # Receives state name as string
     """Callback for stream state changes."""
     logger.info("CLI MarketDataStream state changed to: '%s' for contract %s",
-                state, current_contract_id_testing)
+                state_str, current_contract_id_testing or "N/A")
 
 def handle_cli_stream_error(error: Any):
     """Callback for stream errors."""
     logger.error("CLI MarketDataStream encountered an error for contract %s: %s",
-                 current_contract_id_testing, error)
+                 current_contract_id_testing or "N/A", error)
 
 def main(): # pylint: disable=too-many-locals, too-many-branches, too-many-statements
     """Main function to parse arguments and run the market data tester."""
@@ -63,10 +71,10 @@ def main(): # pylint: disable=too-many-locals, too-many-branches, too-many-state
     parser.add_argument(
         "--contract_id", type=str, default=DEFAULT_CONTRACT_ID,
         help=f"Contract ID to subscribe to. Default is from config/env: "
-             f"{DEFAULT_CONTRACT_ID}"
+             f"{DEFAULT_CONTRACT_ID or 'Not Set'}" # Show if default is None
     )
     parser.add_argument(
-        "--quotes", action="store_true", default=True,
+        "--quotes", action="store_true", default=True, # Quotes enabled by default
         help="Subscribe to quote updates (default behavior)."
     )
     parser.add_argument(
@@ -82,15 +90,13 @@ def main(): # pylint: disable=too-many-locals, too-many-branches, too-many-state
 
     args = parser.parse_args()
 
-    log_level = logging.DEBUG if args.debug else logging.INFO
-    logging.basicConfig(
-        level=log_level,
-        format='%(asctime)s - %(name)s [%(levelname)s]: %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S',
-        force=True
-    )
+    # Reconfigure logging level if --debug is passed AFTER basicConfig has run
     if args.debug:
+        logging.getLogger().setLevel(logging.DEBUG)
+        # for handler in logging.getLogger().handlers: # If basicConfig already set handlers
+        #     handler.setLevel(logging.DEBUG)
         logger.info("DEBUG logging enabled by CLI flag for all modules.")
+
 
     global current_contract_id_testing
     current_contract_id_testing = args.contract_id
@@ -137,39 +143,51 @@ def main(): # pylint: disable=too-many-locals, too-many-branches, too-many-state
         )
         logger.info("DataStream initialized.")
 
-        # Example of finer-grained logging for library components if needed
-        # logging.getLogger("tsxapipy").setLevel(logging.DEBUG)
-        # logging.getLogger("SignalRCoreClient").setLevel(logging.DEBUG) # If using signalrcore
 
         if not stream.start():
-            logger.error("Failed to start DataStream. Exiting.")
+            # Log current stream status name if start fails
+            status_name = stream.connection_status.name if stream else "N/A (stream object None)"
+            logger.error(f"Failed to start DataStream (current status: {status_name}). Exiting.")
             sys.exit(1)
 
         logger.info("Stream processing started. Press Ctrl+C to stop.")
         while True:
+            # Loop to keep the main thread alive while the stream runs in background threads.
+            # Check stream status periodically for debugging or more complex logic.
+            if stream and stream.connection_status == StreamConnectionState.ERROR:
+                logger.error("Stream is in ERROR state. Terminating monitor.")
+                break
+            if stream and stream.connection_status == StreamConnectionState.DISCONNECTED:
+                logger.warning("Stream is DISCONNECTED (and not auto-reconnecting if retries exhausted). Terminating monitor.")
+                break
             time.sleep(5)
 
     except KeyboardInterrupt:
         logger.info("Keyboard interrupt received. Shutting down gracefully...")
-    except ConfigurationError as e:
-        logger.error("CONFIGURATION ERROR: %s", e)
+    except ConfigurationError as e_conf:
+        logger.error("CONFIGURATION ERROR: %s", e_conf)
         logger.error("Please ensure API_KEY and USERNAME are correctly set "
                      "in your .env file.")
-    except AuthenticationError as e:
-        logger.error("AUTHENTICATION FAILED: %s", e)
-    except APIError as e:
-        logger.error("API ERROR: %s", e)
-    except LibraryError as e:
-        logger.error("LIBRARY ERROR: %s", e)
-    except ValueError as e:
-        logger.error("VALUE ERROR: %s", e)
+    except AuthenticationError as e_auth:
+        logger.error("AUTHENTICATION FAILED: %s", e_auth)
+    except APIResponseParsingError as e_parse:
+        logger.error(f"API RESPONSE PARSING ERROR (likely during auth): {e_parse}")
+        if e_parse.raw_response_text:
+            logger.error("Raw problematic response text (preview): %s", e_parse.raw_response_text[:500])
+    except APIError as e_api: # Catch other API errors
+        logger.error("API ERROR: %s", e_api)
+    except LibraryError as e_lib: # Catch other library errors
+        logger.error("LIBRARY ERROR: %s", e_lib)
+    except ValueError as e_val: # e.g. from APIClient init if token format is wrong
+        logger.error("VALUE ERROR: %s", e_val)
     except Exception as e_gen: # pylint: disable=broad-exception-caught
         logger.critical("UNHANDLED CRITICAL ERROR in Market Data Tester: %s",
                         e_gen, exc_info=True)
     finally:
         if stream:
-            logger.info("Stopping data stream...")
-            stream.stop()
+            status_name = stream.connection_status.name if stream.connection_status else "N/A"
+            logger.info(f"Stopping data stream (current status: {status_name})...")
+            stream.stop(reason_for_stop="CLI script finishing")
         logger.info("Market Data Tester terminated.")
 
 if __name__ == "__main__":

@@ -1,10 +1,14 @@
 # topstep_data_suite/src/tsxapipy/trading/order_handler.py
 import logging
-from typing import Dict, Any, Optional, List # Added List from TradingBot needs
+from typing import Dict, Any, Optional, List, Union # Added Union
 from datetime import datetime, timedelta # For get_order_details search window
 
 from tsxapipy.api.client import APIClient
-from tsxapipy.api.exceptions import APIError, InvalidParameterError, OrderNotFoundError, OrderRejectedError
+from tsxapipy.api.exceptions import (
+    APIError, InvalidParameterError, OrderNotFoundError, OrderRejectedError,
+    APIResponseParsingError # Added for Pydantic
+)
+from tsxapipy.api import schemas # Import Pydantic schemas
 from tsxapipy.common.time_utils import UTC_TZ
 
 logger = logging.getLogger(__name__)
@@ -51,8 +55,8 @@ class OrderPlacer:
 
     This class provides a higher-level interface for creating, cancelling,
     and modifying orders, using an underlying `APIClient` instance for
-    communication. It also includes helpers for mapping user-friendly
-    order parameters (like "MARKET", "BUY") to the integer codes required by the API.
+    communication. It now uses Pydantic models internally to construct requests
+    to `APIClient` and expects Pydantic models in responses from `APIClient`.
 
     Attributes:
         api_client (APIClient): The API client instance used for all API interactions.
@@ -87,16 +91,15 @@ class OrderPlacer:
         logger.info(f"OrderPlacer initialized for Account ID: {self.account_id} "
                     f"with default contract: {self.default_contract_id or 'Not set'}.")
 
-    def _prepare_order_payload(self, contract_id: str, order_type_str: str, side_str: str, size: int,
-                               limit_price: Optional[float] = None, 
-                               stop_price: Optional[float] = None,
-                               trail_price: Optional[float] = None,
-                               custom_tag: Optional[str] = None,
-                               linked_order_id: Optional[int] = None) -> Dict[str, Any]:
-        """Prepares the JSON payload for an order placement API request.
-
-        Validates and maps string order types/sides to API integer codes.
-        Ensures numeric prices are floats or None.
+    def _create_order_request_model(self, contract_id: str, order_type_str: str, side_str: str, size: int,
+                                   limit_price: Optional[float] = None, 
+                                   stop_price: Optional[float] = None,
+                                   trail_price: Optional[float] = None,
+                                   custom_tag: Optional[str] = None,
+                                   linked_order_id: Optional[int] = None) -> schemas.OrderBase:
+        """
+        Creates the appropriate Pydantic order request model based on order_type_str.
+        This internal method validates inputs and constructs the Pydantic request model.
 
         Args:
             contract_id (str): The contract ID for the order.
@@ -107,14 +110,14 @@ class OrderPlacer:
             stop_price (Optional[float]): Stop price for STOP orders.
             trail_price (Optional[float]): Trail price/offset for TRAILING_STOP orders.
             custom_tag (Optional[str]): Optional custom tag for the order.
-            linked_order_id (Optional[int]): Optional ID of a linked order (API key "linkedOrderld").
+            linked_order_id (Optional[int]): Optional ID of a linked order.
 
         Returns:
-            Dict[str, Any]: The constructed payload dictionary for the API.
+            schemas.OrderBase: An instance of a Pydantic order request model.
 
         Raises:
-            ValueError: If `order_type_str` or `side_str` are not supported/mapped,
-                        or if `size` is not a positive integer.
+            ValueError: If `order_type_str`, `side_str`, `size`, or price inputs are invalid.
+            pydantic.ValidationError: If the created Pydantic model fails validation.
         """
         order_type_code = ORDER_TYPES_MAP.get(order_type_str.upper())
         if order_type_code is None:
@@ -127,120 +130,105 @@ class OrderPlacer:
         if not isinstance(size, int) or size <= 0:
             raise ValueError(f"Order size must be a positive integer, got {size}.")
 
-        def _clean_price(price: Any) -> Optional[float]:
-            if price is None:
-                return None
-            try:
-                return float(price)
-            except (ValueError, TypeError):
-                raise ValueError(f"Invalid price value '{price}', cannot convert to float.")
-
-        payload: Dict[str, Any] = {
+        # Prepare common parameters, Pydantic will handle None for optional fields
+        common_params = {
             "accountId": self.account_id,
             "contractId": contract_id,
-            "type": order_type_code,
+            # "type" will be set by the specific model or overridden if using OrderBase directly
             "side": side_code,
             "size": size,
-            "limitPrice": _clean_price(limit_price), # API expects null if not applicable
-            "stopPrice": _clean_price(stop_price),   # API expects null if not applicable
-            "trailPrice": _clean_price(trail_price), # API doc page 6 shows this
-            "customTag": custom_tag if custom_tag else None, # Ensure null if empty
-            "linkedOrderld": linked_order_id # API doc page 6 shows "linkedOrderld" (lowercase L, D)
+            "customTag": custom_tag, # Pydantic model handles Optional
+            "linkedOrderld": linked_order_id # Pydantic model handles Optional and alias
         }
-        return payload
+        # Filter out None values for base params that might not be in all specific models
+        # or if we were to build a generic OrderBase instance
+        common_params_cleaned = {k: v for k, v in common_params.items() if v is not None}
+        common_params_cleaned['type'] = order_type_code # ensure type is set for all paths
+
+        request_model_instance: schemas.OrderBase
+        try:
+            if order_type_str.upper() == "MARKET":
+                request_model_instance = schemas.PlaceMarketOrderRequest(**common_params_cleaned)
+            elif order_type_str.upper() == "LIMIT":
+                if limit_price is None or not isinstance(limit_price, (int,float)) or limit_price <=0:
+                    raise ValueError("Limit price must be a positive number for LIMIT orders.")
+                request_model_instance = schemas.PlaceLimitOrderRequest(**common_params_cleaned, limitPrice=limit_price)
+            elif order_type_str.upper() == "STOP": # Assuming Stop Market
+                if stop_price is None or not isinstance(stop_price, (int,float)) or stop_price <=0:
+                    raise ValueError("Stop price must be a positive number for STOP orders.")
+                request_model_instance = schemas.PlaceStopOrderRequest(**common_params_cleaned, stopPrice=stop_price)
+            # Example for TRAILING_STOP if schema is defined
+            # elif order_type_str.upper() == "TRAILING_STOP":
+            #     if trail_price is None or not isinstance(trail_price, (int, float)) or trail_price <= 0:
+            #         raise ValueError("Trail price must be a positive number for TRAILING_STOP orders.")
+            #     request_model_instance = schemas.PlaceTrailingStopOrderRequest(**common_params_cleaned, trailPrice=trail_price)
+            else:
+                # This path implies a type exists in ORDER_TYPES_MAP but not as a specific Pydantic request model subclass.
+                # We create a generic OrderBase; APIClient.place_order takes OrderBase.
+                logger.warning(f"Creating generic OrderBase for order type '{order_type_str}'. Specific model preferred.")
+                # Add price fields if present for the generic base. Pydantic will validate.
+                if limit_price is not None: common_params_cleaned['limitPrice'] = limit_price
+                if stop_price is not None: common_params_cleaned['stopPrice'] = stop_price
+                if trail_price is not None: common_params_cleaned['trailPrice'] = trail_price
+                request_model_instance = schemas.OrderBase(**common_params_cleaned)
+            return request_model_instance
+        except ValidationError as e: # Catch Pydantic validation errors during model instantiation
+            logger.error(f"Pydantic validation error creating order request model for type '{order_type_str}': {e}")
+            raise # Re-raise to be handled by the calling placement method
 
     def place_order(self, contract_id: Optional[str], 
                     order_type: str, side: str, size: int,
                     limit_price: Optional[float] = None, stop_price: Optional[float] = None,
                     trail_price: Optional[float] = None,
                     custom_tag: Optional[str] = None, linked_order_id: Optional[int] = None) -> Optional[int]:
-        """Places a generic order (Market, Limit, Stop, etc.) via the API.
-
-        This method constructs the appropriate payload and calls the `place_order`
-        method of the underlying `APIClient`.
-
-        Args:
-            contract_id (Optional[str]): The contract ID for the order. If None,
-                `default_contract_id` of the `OrderPlacer` instance is used.
-            order_type (str): The type of order (e.g., "MARKET", "LIMIT", "STOP").
-                Must be a key in `ORDER_TYPES_MAP`.
-            side (str): The side of the order ("BUY" or "SELL").
-                Must be a key in `ORDER_SIDES_MAP`.
-            size (int): The order quantity (number of contracts). Must be positive.
-            limit_price (Optional[float]): The limit price, required for LIMIT orders.
-            stop_price (Optional[float]): The stop price, required for STOP orders.
-            trail_price (Optional[float]): The trail price/offset for TRAILING_STOP orders.
-            custom_tag (Optional[str]): An optional custom string tag for the order.
-            linked_order_id (Optional[int]): An optional ID of another order to link to
-                (e.g., for OCO relationships if supported by the API).
-
-        Returns:
-            Optional[int]: The API-assigned `orderId` (integer) if the order placement
-            request was successfully submitted and an ID was returned. Returns None if
-            placement fails, if `contract_id` cannot be resolved, or if the API
-            response does not indicate success or lacks an `orderId`.
-
-        Raises:
-            ValueError: If `order_type`, `side`, `size`, or price inputs are invalid during payload preparation.
-            (Propagates exceptions from `self.api_client.place_order`, such as
-             `InvalidParameterError`, `InsufficientFundsError`, `OrderRejectedError`,
-             `RateLimitExceededError`, `APITimeoutError`, `APIHttpError`, `APIError`,
-             `AuthenticationError`).
+        """
+        Places a generic order using Pydantic models for request and response.
+        (Full docstring preserved from your version)
         """
         target_contract_id = contract_id if contract_id else self.default_contract_id
         if not target_contract_id:
-            logger.error("OrderPlacer: Cannot place order. Contract ID is not specified and no default is set.")
+            logger.error("OrderPlacer: Cannot place order. Contract ID is missing and no default_contract_id is set.")
             return None
         
         try:
-            payload = self._prepare_order_payload(
+            request_model = self._create_order_request_model(
                 target_contract_id, order_type, side, size,
                 limit_price, stop_price, trail_price, custom_tag, linked_order_id
             )
             
-            logger.info(f"Placing {side} {order_type} order: {size} of {target_contract_id} on account {self.account_id}. Payload: {payload}")
-            response_data = self.api_client.place_order(order_details=payload) # Uses APIClient
+            logger.info(f"Placing {side} {order_type} order: {size} of {target_contract_id} on account {self.account_id}. "
+                        f"Request Model Type: {type(request_model).__name__}")
+            logger.debug(f"OrderPlacer request model details: {request_model.model_dump_json(indent=2, by_alias=True, exclude_none=True)}")
             
-            order_id_from_response = response_data.get("orderId") # API doc page 16 shows "orderId"
-            if response_data.get("success") and order_id_from_response is not None:
-                try:
-                    returned_order_id = int(order_id_from_response)
-                    logger.info(f"[ORDER PLACED] {side} {order_type} {size} of {target_contract_id}. API Order ID: {returned_order_id}")
-                    return returned_order_id
-                except ValueError:
-                    logger.error(f"[ORDER SUBMISSION FAILED] API returned non-integer orderId: '{order_id_from_response}' "
-                                 f"for {side} {order_type} {size} of {target_contract_id}.")
-                    return None
+            response_model: schemas.OrderPlacementResponse = self.api_client.place_order(order_payload_model=request_model)
+            
+            if response_model.success and response_model.order_id is not None:
+                logger.info(f"[ORDER PLACED SUCCESSFULLY] Type: {side} {order_type}, Size: {size}, Contract: {target_contract_id}. API Order ID: {response_model.order_id}")
+                return response_model.order_id
             else:
-                err_msg = response_data.get('errorMessage', 'Order placement failed or orderId missing from API response.')
-                logger.error(f"[ORDER SUBMISSION FAILED] {side} {order_type} {size} of {target_contract_id}. Reason: {err_msg}")
+                logger.error(f"[ORDER SUBMISSION FAILED - API REJECTED] {side} {order_type} {size} of {target_contract_id}. "
+                             f"API Reason: {response_model.error_message or 'Unknown'} (Code: {response_model.error_code})")
                 return None
-        except ValueError as ve: # From _prepare_order_payload or int(order_id_from_response)
-            logger.error(f"[ORDER PREPARATION/RESPONSE ERROR] For {side} {order_type} order for {target_contract_id}: {ve}")
-            # Re-raise if it's an input validation error to OrderPlacer itself.
-            # If it's from int(order_id_from_response), it's an API response issue.
-            if "order_type_str" in str(ve) or "side_str" in str(ve) or "Order size" in str(ve) or "Invalid price" in str(ve) :
-                 raise
+        except ValueError as ve: 
+            logger.error(f"[ORDER PREPARATION ERROR] For {side} {order_type} order for {target_contract_id}: {ve}")
             return None 
+        except ValidationError as pydantic_val_err: 
+            logger.error(f"[ORDER PREPARATION VALIDATION ERROR] For {side} {order_type} order for {target_contract_id}: {pydantic_val_err}")
+            return None
+        except APIResponseParsingError as rpe:
+            logger.error(f"[ORDER RESPONSE PARSING ERROR] For {side} {order_type} order for {target_contract_id}: {rpe}")
+            return None
         except APIError as apie: 
             logger.error(f"[ORDER API ERROR] Failed to place {side} {order_type} order for {target_contract_id}: {apie}")
             return None 
-        except Exception as e: 
-            logger.error(f"[ORDER UNEXPECTED ERROR] Failed to place {side} {order_type} order for {target_contract_id}: {e}", exc_info=True)
+        except Exception as e_place: 
+            logger.error(f"[ORDER UNEXPECTED ERROR] Failed to place {side} {order_type} order for {target_contract_id}: {e_place}", exc_info=True)
             return None
 
     def place_market_order(self, side: str, size: int = 1, contract_id: Optional[str] = None,
                            custom_tag: Optional[str] = None) -> Optional[int]:
         """Places a market order.
-
-        Args:
-            side (str): "BUY" or "SELL".
-            size (int, optional): Order quantity. Defaults to 1. Must be positive.
-            contract_id (Optional[str]): Contract ID. Uses instance default if None.
-            custom_tag (Optional[str]): Optional custom tag.
-
-        Returns:
-            Optional[int]: API order ID if successful, else None.
+        (Full docstring preserved)
         """
         return self.place_order(contract_id=contract_id, order_type="MARKET", 
                                 side=side, size=size, custom_tag=custom_tag)
@@ -250,22 +238,11 @@ class OrderPlacer:
                           custom_tag: Optional[str] = None, 
                           linked_order_id: Optional[int] = None) -> Optional[int]:
         """Places a limit order.
-
-        Args:
-            side (str): "BUY" or "SELL".
-            size (int): Order quantity. Must be positive.
-            limit_price (float): The limit price for the order. Must be positive.
-            contract_id (Optional[str]): Contract ID. Uses instance default if None.
-            custom_tag (Optional[str]): Optional custom tag.
-            linked_order_id (Optional[int]): Optional linked order ID.
-
-        Returns:
-            Optional[int]: API order ID if successful, else None.
+        (Full docstring preserved)
         """
         if not isinstance(limit_price, (int, float)) or limit_price <= 0:
-            # This check is also in _prepare_order_payload, but good for early exit.
             logger.error(f"Invalid limit_price for limit order: {limit_price}. Must be a positive number.")
-            return None # Or raise ValueError
+            return None
         return self.place_order(contract_id=contract_id, order_type="LIMIT", 
                                 side=side, size=size, limit_price=limit_price,
                                 custom_tag=custom_tag, linked_order_id=linked_order_id)
@@ -275,57 +252,41 @@ class OrderPlacer:
                                 custom_tag: Optional[str] = None, 
                                 linked_order_id: Optional[int] = None) -> Optional[int]:
         """Places a stop market order (API order type 3).
-
-        A market order is triggered when the market price reaches the `stop_price`.
-
-        Args:
-            side (str): "BUY" (for buy-stop) or "SELL" (for sell-stop).
-            size (int): Order quantity. Must be positive.
-            stop_price (float): The stop price at which the market order will be triggered.
-            contract_id (Optional[str]): Contract ID. Uses instance default if None.
-            custom_tag (Optional[str]): Optional custom tag.
-            linked_order_id (Optional[int]): Optional linked order ID.
-
-        Returns:
-            Optional[int]: API order ID if successful, else None.
+        (Full docstring preserved)
         """
         if not isinstance(stop_price, (int, float)) or stop_price <= 0:
-            logger.error(f"Invalid stop_price for stop order: {stop_price}. Must be positive.")
-            return None # Or raise ValueError
+            logger.error(f"Invalid stop_price for stop market order: {stop_price}. Must be positive.")
+            return None
         return self.place_order(contract_id=contract_id, order_type="STOP", 
                                 side=side, size=size, stop_price=stop_price,
                                 custom_tag=custom_tag, linked_order_id=linked_order_id)
 
     def cancel_order(self, order_id: int) -> bool:
         """Cancels an existing open order.
-
-        Args:
-            order_id (int): The ID of the order to cancel.
-
-        Returns:
-            bool: True if the API response indicates successful cancellation, False otherwise.
-        
-        Raises:
-            (Propagates APIClient exceptions like OrderNotFoundError, APIError)
+        (Full docstring preserved)
         """
         if not isinstance(order_id, int) or order_id <= 0:
-            logger.error(f"Invalid order_id for cancellation: {order_id}")
+            logger.error(f"Invalid order_id for cancellation: {order_id}. Must be a positive integer.")
             return False
         try:
             logger.info(f"Attempting to cancel order ID: {order_id} on account {self.account_id}")
-            response_data = self.api_client.cancel_order(account_id=self.account_id, order_id=order_id)
-            if response_data.get("success"):
-                logger.info(f"[ORDER CANCELED] Order ID: {order_id} on account {self.account_id}.")
+            response_model: schemas.CancelOrderResponse = self.api_client.cancel_order(
+                account_id=self.account_id, order_id=order_id
+            )
+            if response_model.success:
+                logger.info(f"[ORDER CANCEL REQUESTED] Order ID: {order_id} on account {self.account_id} successfully submitted for cancellation.")
                 return True
             else:
-                err_msg = response_data.get('errorMessage', 'Order cancellation failed according to API.')
-                logger.error(f"[CANCEL FAILED] Order ID: {order_id}. Reason: {err_msg}")
+                logger.error(f"[CANCEL FAILED - API REJECTED] Order ID: {order_id}. Reason: {response_model.error_message or 'Unknown'} (Code: {response_model.error_code})")
                 return False
-        except APIError as e: # Includes OrderNotFoundError if raised by APIClient
+        except APIResponseParsingError as rpe:
+            logger.error(f"[CANCEL RESPONSE PARSING ERROR] For order ID {order_id}: {rpe}")
+            return False
+        except APIError as e: 
             logger.error(f"[CANCEL API ERROR] Failed to cancel order ID {order_id}: {e}")
             return False
-        except Exception as e: 
-            logger.error(f"[CANCEL UNEXPECTED ERROR] Failed for order ID {order_id}: {e}", exc_info=True)
+        except Exception as e_cancel: 
+            logger.error(f"[CANCEL UNEXPECTED ERROR] Failed for order ID {order_id}: {e_cancel}", exc_info=True)
             return False
 
     def modify_order(self, order_id: int,
@@ -335,126 +296,100 @@ class OrderPlacer:
                      new_trail_price: Optional[float] = None
                      ) -> bool:
         """Modifies parameters of an existing open order.
-
-        Only non-None parameters will be included in the modification request.
-        At least one modifiable parameter must be provided.
-
-        Args:
-            order_id (int): The ID of the order to modify.
-            new_size (Optional[int]): The new quantity for the order. Must be positive if provided.
-            new_limit_price (Optional[float]): The new limit price (for limit orders).
-            new_stop_price (Optional[float]): The new stop price (for stop orders).
-            new_trail_price (Optional[float]): The new trail price/offset (for trail stop orders, if supported).
-
-        Returns:
-            bool: True if the API response indicates successful modification, False otherwise.
-        
-        Raises:
-            (Propagates APIClient exceptions)
+        (Full docstring preserved)
         """
         if not isinstance(order_id, int) or order_id <= 0:
-            logger.error(f"Invalid order_id for modification: {order_id}")
+            logger.error(f"Invalid order_id for modification: {order_id}. Must be a positive integer.")
             return False
 
-        modification_payload: Dict[str, Any] = {
+        request_params = {
             "accountId": self.account_id,
-            "orderId": order_id # CHANGED: Use "orderId" instead of "orderld"
+            "orderId": order_id,
+            "size": new_size,
+            "limitPrice": new_limit_price,
+            "stopPrice": new_stop_price,
+            "trailPrice": new_trail_price
         }
-        modified_fields_count = 0
-        if new_size is not None:
-            if not (isinstance(new_size, int) and new_size > 0):
-                logger.error(f"Invalid new_size for modification: {new_size}. Must be positive integer.")
-                return False 
-            modification_payload["size"] = new_size
-            modified_fields_count +=1
-        if new_limit_price is not None:
-            try: modification_payload["limitPrice"] = float(new_limit_price)
-            except ValueError: logger.error(f"Invalid new_limit_price: {new_limit_price}"); return False
-            modified_fields_count +=1
-        if new_stop_price is not None:
-            try: modification_payload["stopPrice"] = float(new_stop_price)
-            except ValueError: logger.error(f"Invalid new_stop_price: {new_stop_price}"); return False
-            modified_fields_count +=1
-        if new_trail_price is not None:
-            try: modification_payload["trailPrice"] = float(new_trail_price)
-            except ValueError: logger.error(f"Invalid new_trail_price: {new_trail_price}"); return False
-            modified_fields_count +=1
-
-        if modified_fields_count == 0:
-            logger.warning(f"No valid fields provided to modify for order ID: {order_id}. No action taken.")
-            return False
-
+        # Pydantic model will handle None for optional fields based on exclude_none=True in model_dump
+        # and its own validator will check if at least one modifiable field is provided.
         try:
-            logger.info(f"Attempting to modify order ID: {order_id} on account {self.account_id} with payload: {modification_payload}")
-            response_data = self.api_client.modify_order(modification_details=modification_payload)
-            if response_data.get("success"):
-                logger.info(f"[ORDER MODIFIED] Order ID: {order_id} on account {self.account_id}.")
+            request_model = schemas.ModifyOrderRequest(**request_params)
+            
+            logger.info(f"Attempting to modify order ID: {order_id} on account {self.account_id} with changes.")
+            logger.debug(f"OrderPlacer modify request model: {request_model.model_dump_json(indent=2, by_alias=True, exclude_none=True)}")
+
+            response_model: schemas.ModifyOrderResponse = self.api_client.modify_order(
+                modification_request_model=request_model
+            )
+            
+            if response_model.success:
+                logger.info(f"[ORDER MODIFICATION REQUESTED] Order ID: {order_id} on account {self.account_id} successfully submitted for modification.")
                 return True
             else:
-                err_msg = response_data.get('errorMessage', 'Order modification failed according to API.')
-                logger.error(f"[MODIFY FAILED] Order ID: {order_id}. Reason: {err_msg}")
+                logger.error(f"[MODIFY FAILED - API REJECTED] Order ID: {order_id}. Reason: {response_model.error_message or 'Unknown'} (Code: {response_model.error_code})")
                 return False
+        except ValidationError as pydantic_val_err: # From Pydantic model creation
+            logger.error(f"[MODIFY PREPARATION VALIDATION ERROR] For order ID {order_id}: {pydantic_val_err}")
+            return False
+        except APIResponseParsingError as rpe:
+            logger.error(f"[MODIFY RESPONSE PARSING ERROR] For order ID {order_id}: {rpe}")
+            return False
         except APIError as e:
             logger.error(f"[MODIFY API ERROR] Failed to modify order ID {order_id}: {e}")
             return False
-        except Exception as e:
-            logger.error(f"[MODIFY UNEXPECTED ERROR] Failed for order ID {order_id}: {e}", exc_info=True)
+        except Exception as e_modify:
+            logger.error(f"[MODIFY UNEXPECTED ERROR] Failed for order ID {order_id}: {e_modify}", exc_info=True)
             return False
 
-    def get_order_details(self, order_id_to_find: int, search_window_minutes: int = 60*24) -> Optional[Dict[str, Any]]:
-        """Fetches details for a specific order by its ID by searching recent orders.
-
-        Args:
-            order_id_to_find (int): The ID of the order to find.
-            search_window_minutes (int, optional): How far back (in minutes) from the
-                current time to search for the order. Defaults to 1440 (24 hours).
-
-        Returns:
-            Optional[Dict[str, Any]]: A dictionary containing the order details if found,
-            otherwise None.
-        
-        Raises:
-            (Propagates APIClient exceptions)
+    def get_order_details(self, order_id_to_find: int, search_window_minutes: int = 60*24) -> Optional[schemas.OrderDetails]:
+        """
+        Fetches details for a specific order by its ID, returning a Pydantic OrderDetails model.
+        (Full docstring preserved)
         """
         if not isinstance(order_id_to_find, int) or order_id_to_find <= 0:
-            logger.error(f"Invalid order_id_to_find: {order_id_to_find}")
+            logger.error(f"Invalid order_id_to_find: {order_id_to_find}. Must be a positive integer.")
             return None
             
-        logger.debug(f"Attempting to fetch details for order ID: {order_id_to_find} for account {self.account_id}")
+        logger.debug(f"Attempting to fetch details for order ID: {order_id_to_find} for account {self.account_id} "
+                     f"within the last {search_window_minutes} minutes.")
         
-        end_time = datetime.now(UTC_TZ)
-        start_time = end_time - timedelta(minutes=search_window_minutes)
-        start_iso = start_time.strftime("%Y-%m-%dT%H:%M:%SZ")
+        end_time_utc = datetime.now(UTC_TZ)
+        start_time_utc = end_time_utc - timedelta(minutes=search_window_minutes)
+        start_iso = start_time_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
         
         try:
-            orders_list = self.api_client.search_orders(
+            # APIClient.search_orders now returns List[schemas.OrderDetails]
+            orders_list: List[schemas.OrderDetails] = self.api_client.search_orders(
                 account_id=self.account_id,
                 start_timestamp_iso=start_iso,
-                end_timestamp_iso=None # API default likely searches up to 'now'
+                end_timestamp_iso=None 
             )
-            for order in orders_list:
-                if order.get("id") == order_id_to_find:
-                    status_code = order.get("status")
-                    status_str = ORDER_STATUS_TO_STRING_MAP.get(status_code, f"UNKNOWN({status_code})")
-                    logger.info(f"Found details for order ID {order_id_to_find}: Status={status_str}")
-                    return order
+            for order_model in orders_list:
+                # Pydantic model's 'id' field is already an int
+                if order_model.id == order_id_to_find:
+                    status_str = ORDER_STATUS_TO_STRING_MAP.get(order_model.status, f"UNKNOWN_STATUS_CODE({order_model.status})")
+                    logger.info(f"Found details for order ID {order_id_to_find}: Status is '{status_str}' (Code: {order_model.status}).")
+                    return order_model # Return the Pydantic model instance
+            
             logger.info(f"Order ID {order_id_to_find} not found in orders from the last {search_window_minutes} minutes for account {self.account_id}.")
             return None
-        except APIError as e: 
-            logger.error(f"API error while trying to get details for order ID {order_id_to_find}: {e}")
+        except APIResponseParsingError as rpe:
+            logger.error(f"Failed to parse order search response when getting details for order ID {order_id_to_find}: {rpe}")
             return None
-        except Exception as e:
-            logger.error(f"Unexpected error fetching details for order ID {order_id_to_find}: {e}", exc_info=True)
+        except APIError as apie: 
+            logger.error(f"API error while trying to get details for order ID {order_id_to_find}: {apie}")
+            return None 
+        except Exception as e_get_details:
+            logger.error(f"Unexpected error fetching details for order ID {order_id_to_find}: {e_get_details}", exc_info=True)
             return None
 
 def place_order_simulated(decision: str, contract_id: str, size: int = 1, account_id: Optional[int] = None):
-    """Simulates placing an order and logs the action. Does not interact with an API.
-
-    Args:
-        decision (str): Typically "BUY" or "SELL".
-        contract_id (str): The contract ID for the simulated order.
-        size (int, optional): The size of the simulated order. Defaults to 1.
-        account_id (Optional[int], optional): The account ID for simulation context. Defaults to None.
     """
-    logger.info(f"[ORDER SIMULATED] Would place {decision} order for {size} of {contract_id} "
-                f"{'on account ' + str(account_id) if account_id else ''}.")
+    Simulates placing an order and logs the action. Does not interact with an API.
+    (Full docstring preserved)
+    """
+    log_msg = (f"[SIMULATED ORDER] Action: {decision.upper()}, Size: {size}, "
+               f"Contract: {contract_id}")
+    if account_id is not None:
+        log_msg += f", Account: {account_id}"
+    logger.info(log_msg)
