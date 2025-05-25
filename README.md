@@ -212,11 +212,6 @@ except APIError as e:
     logger.error(f"API operation failed: {e}")
 except Exception as e:
     logger.error(f"An unexpected error occurred: {e}", exc_info=True)
-IGNORE_WHEN_COPYING_START
-content_copy
-download
-Use code with caution.
-IGNORE_WHEN_COPYING_END
 
 The APIClient automatically handles session token revalidation for its HTTP REST API calls.
 
@@ -245,12 +240,7 @@ except APIError as e: # Catch errors specific to historical data fetching if nee
     logger.error(f"API error during historical data update: {e}")
 except Exception as e:
     logger.error(f"Unexpected error during historical data update: {e}", exc_info=True)
-IGNORE_WHEN_COPYING_START
-content_copy
-download
-Use code with caution.
-Python
-IGNORE_WHEN_COPYING_END
+
 3. Real-Time Market Data Streaming (DataStream)
 
 The DataStream class connects to the Market Hub.
@@ -296,12 +286,7 @@ finally:
     if market_stream_instance:
         logger.info("Stopping market stream...")
         market_stream_instance.stop()
-IGNORE_WHEN_COPYING_START
-content_copy
-download
-Use code with caution.
-Python
-IGNORE_WHEN_COPYING_END
+
 4. Real-Time User Data Streaming (UserHubStream)
 
 The UserHubStream class connects to the User Hub for account-specific events.
@@ -339,12 +324,6 @@ except KeyboardInterrupt: logger.info("User stream monitoring interrupted.")
 except Exception as e: logger.error(f"Error in user stream example: {e}", exc_info=True)
 finally:
     if user_stream_instance: logger.info("Stopping user stream..."); user_stream_instance.stop()
-IGNORE_WHEN_COPYING_START
-content_copy
-download
-Use code with caution.
-Python
-IGNORE_WHEN_COPYING_END
 
 Important Note on Stream Token Refresh (Application Responsibility):
 
@@ -391,12 +370,6 @@ try:
             logger.error("Failed to place market buy order.")
 except Exception as e:
     logger.error(f"Error with OrderPlacer example: {e}", exc_info=True)
-IGNORE_WHEN_COPYING_START
-content_copy
-download
-Use code with caution.
-Python
-IGNORE_WHEN_COPYING_END
 
 Refer to tsxapipy/trading/order_handler.py for more OrderPlacer methods.
 
@@ -422,12 +395,7 @@ except requests.exceptions.RequestException as e: # Lower-level network
     logger.error(f"Network request failed: {e}")
 except Exception as e:
     logger.error(f"An unexpected error: {e}", exc_info=True)
-IGNORE_WHEN_COPYING_START
-content_copy
-download
-Use code with caution.
-Python
-IGNORE_WHEN_COPYING_END
+
 CLI Scripts
 
 The scripts/ directory contains several useful command-line tools:
@@ -446,22 +414,10 @@ Running Scripts:
 Navigate to the topstep_data_suite root directory. Ensure your virtual environment is activated and .env is configured.
 
 python scripts/<script_name.py> [arguments]
-IGNORE_WHEN_COPYING_START
-content_copy
-download
-Use code with caution.
-Bash
-IGNORE_WHEN_COPYING_END
 
 Example:
 
 python scripts/fetch_historical_cli.py --symbol_root NQ --api_period 1min --output_dir data/historical_nq --debug
-IGNORE_WHEN_COPYING_START
-content_copy
-download
-Use code with caution.
-Bash
-IGNORE_WHEN_COPYING_END
 
 Use the --help flag for each script to see its available arguments.
 
@@ -472,12 +428,6 @@ Tests: Located in the tests/ directory (unit/ and integration/).
 Running Tests: From the project root, use pytest:
 
 pytest
-IGNORE_WHEN_COPYING_START
-content_copy
-download
-Use code with caution.
-Bash
-IGNORE_WHEN_COPYING_END
 
 Linters/Formatters: We recommend flake8 and black. mypy for type checking.
 
