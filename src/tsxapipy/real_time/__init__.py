@@ -1,19 +1,11 @@
-# topstep_data_suite/src/tsxapipy/real_time/__init__.py
 """
-The real_time package provides classes for connecting to and handling
-real-time data streams from the TopStep API via SignalR.
+Real-time data streaming module for tsxapipy.
 
-It includes:
-- DataStream: For market data like quotes, trades, and market depth.
-- UserHubStream: For user-specific data like account updates, orders,
-                 positions, and user trade executions.
-- StreamConnectionState: Enum for common stream connection states.
+This module provides components for real-time data streaming from the API.
 """
-from .data_stream import DataStream, StreamConnectionState # Import StreamConnectionState from data_stream
-from .user_hub_stream import UserHubStream 
 
-__all__ = [
-    "DataStream",
-    "UserHubStream",
-    "StreamConnectionState", # Add StreamConnectionState to __all__
-]
+from .data_stream import DataStream
+from .user_hub_stream import UserHubStream
+from .stream_state import StreamConnectionState
+
+__all__ = ['DataStream', 'UserHubStream', 'StreamConnectionState']

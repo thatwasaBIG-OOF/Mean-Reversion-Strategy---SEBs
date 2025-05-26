@@ -193,3 +193,6 @@ if ACCOUNT_ID_TO_WATCH is None:
         "Config: Optional default ACCOUNT_ID_TO_WATCH is not set or was invalid. "
         "Scripts needing it may require CLI arg or will fail if it's mandatory for them."
     )
+
+# API configuration
+API_BASE_URL = "https://api.tsxapi.com"  # Default API base URL

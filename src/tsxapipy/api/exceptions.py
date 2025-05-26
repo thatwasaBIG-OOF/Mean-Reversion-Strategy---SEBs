@@ -1,163 +1,137 @@
 # tsxapipy/api/exceptions.py
-from typing import Optional, Any, Dict
+"""
+Exceptions module for tsxapipy.
+
+This module provides custom exceptions for the tsxapipy package.
+"""
+
+from typing import Any, Optional 
 
 class LibraryError(Exception):
-    """Base class for all custom errors from the tsxapipy library."""
+    """Base exception class for all tsxapipy errors."""
     pass
 
 class ConfigurationError(LibraryError):
-    """Raised for errors related to library configuration,
-    such as missing or invalid settings in the .env file or environment variables.
-    """
+    """Raised when there is a configuration error."""
+    pass
+
+class AuthenticationError(LibraryError):
+    """Raised when authentication fails."""
     pass
 
 class APIError(LibraryError):
-    """Base class for all custom API related errors from this library,
-    typically involving an interaction with the remote API.
-    """
-    pass
-
-class AuthenticationError(APIError):
-    """Raised for authentication failures.
-
-    This can occur during initial login (e.g., invalid credentials, API key issues)
-    or during token revalidation/re-authentication processes.
-    """
-    pass
-
-class APITimeoutError(APIError):
-    """Raised when an API request to a specific endpoint times out."""
-    pass
-
-class APIHttpError(APIError):
-    """Raised for HTTP errors received from the API (e.g., 4xx client errors, 5xx server errors).
-
+    """Base class for API-related errors.
+    
     Attributes:
-        status_code (int): The HTTP status code.
-        response_text (Optional[str]): The raw response text, if available.
-        headers (Dict[str, str]): The HTTP response headers.
+        message (str): The error message.
+        error_code (Optional[Any]): The API-specific error code, if available.
+        raw_response (Optional[Dict[str, Any]]): The raw JSON response from the API, if available.
+        http_status_code (Optional[int]): The HTTP status code, if applicable.
+        headers (Optional[Dict[str, str]]): HTTP response headers, if applicable.
+        retry_after_seconds (Optional[int]): Seconds to wait before retrying, if applicable.
     """
-    def __init__(self, status_code: int, message: str,
-                 response_text: Optional[str] = None,
-                 headers: Optional[Dict[str, str]] = None):
-        super().__init__(f"HTTP {status_code}: {message}")
-        self.status_code = status_code
-        self.response_text = response_text
-        self.headers = headers if headers is not None else {}
-
-    def __str__(self):
-        header_info = f" | Headers: {self.headers}" if self.headers else ""
-        resp_text_preview = f" | Response: {self.response_text[:200]}..." if self.response_text and len(self.response_text) > 200 else (f" | Response: {self.response_text}" if self.response_text else "")
-        return f"{super().__str__}{resp_text_preview}{header_info}"
-
-class APIResponseError(APIError):
-    """
-    Raised when an API request is successful HTTP-wise (e.g., 200 OK),
-    but the response body indicates a business logic failure
-    (e.g., {"success": false, "errorCode": ..., "errorMessage": ...}).
-
-    Attributes:
-        error_code (Optional[Any]): The specific error code from the API response body.
-        raw_response (Optional[Dict[str, Any]]): The full parsed JSON response body.
-    """
-    def __init__(self, message: str, error_code: Optional[Any] = None,
-                 raw_response: Optional[Dict[str, Any]] = None):
+    def __init__(self, message: str, error_code: Any = None, raw_response: Any = None, 
+                 http_status_code: int = None, headers: Any = None, retry_after_seconds: int = None):
         super().__init__(message)
+        self.message = message 
         self.error_code = error_code
-        self.raw_response = raw_response
-
-    def __str__(self):
-        return f"{super().__str__()} (API Error Code: {self.error_code})"
-
-class APIResponseParsingError(APIError): # New Exception Class
-    """
-    Raised when the API response content cannot be successfully parsed or validated
-    against the expected Pydantic model or data structure.
-
-    This typically indicates a mismatch between the expected API response schema
-    and the actual data received, or malformed JSON.
-
-    Attributes:
-        raw_response_text (Optional[str]): The raw response text, if available,
-                                           to aid in debugging the parsing issue.
-    """
-    def __init__(self, message: str, raw_response_text: Optional[str] = None):
-        super().__init__(message)
-        self.raw_response_text = raw_response_text
-
-    def __str__(self):
-        if self.raw_response_text:
-            # Provide a preview of the raw text to avoid overly long error messages
-            preview_limit = 250
-            text_preview = self.raw_response_text[:preview_limit]
-            if len(self.raw_response_text) > preview_limit:
-                text_preview += "..."
-            return f"{super().__str__()} | Raw Response Text (preview): {text_preview}"
-        return super().__str__()
-
-# --- Specific API Response Error Subclasses (ensure they inherit from APIResponseError or APIError) ---
-
-class ContractNotFoundError(APIResponseError): # Or APIError if it can come from HTTP 404
-    """API indicates the specified contract could not be found or determined."""
-    pass
-
-class InvalidParameterError(APIResponseError): # Or APIError if it can come from HTTP 400
-    """API indicates one or more parameters in the request were invalid."""
-    pass
-
-class RateLimitExceededError(APIError): # Could be HTTP 429 or JSON error
-    """API indicates rate limits have been exceeded.
-
-    Attributes:
-        error_code (Optional[Any]): The HTTP status code (e.g., 429) or API specific error code.
-        raw_response_body (Optional[Dict[str, Any]]): The JSON response body if error from JSON.
-        response_headers (Dict[str, str]): The HTTP response headers, may contain 'Retry-After'.
-        retry_after_seconds (Optional[int]): Suggested seconds to wait before retrying, if available.
-    """
-    def __init__(self, message: str,
-                 error_code: Optional[Any] = None,
-                 raw_response_body: Optional[Dict[str, Any]] = None,
-                 response_headers: Optional[Dict[str, str]] = None,
-                 retry_after_seconds: Optional[int] = None):
-        super().__init__(message)
-        self.error_code = error_code
-        self.raw_response_body = raw_response_body
-        self.response_headers = response_headers if response_headers is not None else {}
+        self.raw_response = raw_response 
+        self.http_status_code = http_status_code
+        self.headers = headers
         self.retry_after_seconds = retry_after_seconds
 
     def __str__(self):
-        base_str = super().__str__()
-        if self.error_code:
-            base_str += f" (Code: {self.error_code})"
-        if self.retry_after_seconds is not None:
-            return f"{base_str} | Suggested retry after: {self.retry_after_seconds} seconds."
-        return base_str
+        # Provide a more informative string representation
+        parts = [self.message]
+        if self.error_code is not None:
+            parts.append(f"API ErrorCode: {self.error_code}")
+        if self.http_status_code is not None:
+            parts.append(f"HTTP Status: {self.http_status_code}")
+        # Avoid printing large raw_response directly in str(exception)
+        # if self.raw_response is not None:
+        #     parts.append(f"RawResponse: {str(self.raw_response)[:100]}...") 
+        return " | ".join(parts)
 
-class InsufficientFundsError(APIResponseError):
-    """API indicates insufficient funds for the requested trading operation."""
-    pass
 
-class OrderNotFoundError(APIResponseError):
-    """API indicates a specified order ID was not found (e.g., for cancel/modify)."""
-    pass
+class APITimeoutError(APIError):
+    """Raised when an API request times out."""
+    def __init__(self, message: str = "API request timed out.", error_code: Any = None, raw_response: Any = None):
+        super().__init__(message, error_code=error_code, raw_response=raw_response)
 
-class OrderRejectedError(APIResponseError):
-    """API indicates an order was rejected for a specific reason."""
-    pass
+class APIHttpError(APIError):
+    """Raised when an API request returns an HTTP error."""
+    def __init__(self, http_status_code: int, message: Optional[str] = None, 
+                 response_text: Optional[str] = None, headers: Any = None, 
+                 error_code: Any = None, raw_response: Any = None): # Added raw_response for consistency
+        self.status_code = http_status_code # Specific alias often used
+        self.response_text = response_text  
+        
+        msg = message or f"HTTP error {http_status_code}"
+        # Optionally append response_text preview if no detailed message is provided
+        if response_text and not message and len(response_text) < 200: # Only if short
+             msg += f" - Server Response: {response_text}"
+        elif response_text and not message:
+            msg += f" - Server Response Preview: {response_text[:100]}..."
 
-class MaxPositionLimitError(APIResponseError):
-    """API indicates a maximum position limit would be exceeded by the order."""
-    pass
+        super().__init__(msg, error_code=error_code, raw_response=raw_response, 
+                         http_status_code=http_status_code, headers=headers)
 
-class MarketClosedError(APIResponseError):
-    """API indicates the market for the instrument is currently closed for trading."""
-    pass
+class APIResponseError(APIError):
+    """Raised when an API response contains an error (e.g., success=false)."""
+    def __init__(self, message: str, error_code: Any = None, raw_response: Any = None):
+        super().__init__(message, error_code=error_code, raw_response=raw_response)
 
-# It's good practice to define __all__ if this module is intended for broader import use
-__all__ = [
-    "LibraryError", "ConfigurationError", "APIError", "AuthenticationError",
-    "APITimeoutError", "APIHttpError", "APIResponseError", "APIResponseParsingError",
-    "ContractNotFoundError", "InvalidParameterError", "RateLimitExceededError",
-    "InsufficientFundsError", "OrderNotFoundError", "OrderRejectedError",
-    "MaxPositionLimitError", "MarketClosedError"
-]
+class APIResponseParsingError(APIError):
+    """Raised when there is an error parsing an API response."""
+    def __init__(self, message: str, raw_response_text: Optional[str] = None, 
+                 error_code: Any = None, raw_response: Any = None): # Added raw_response for consistency
+        super().__init__(message, error_code=error_code, raw_response=raw_response)
+        self.raw_response_text = raw_response_text
+
+
+class InvalidParameterError(APIError):
+    """Raised when an invalid parameter is provided to an API call."""
+    def __init__(self, message: str, error_code: Any = None, raw_response: Any = None):
+        super().__init__(message, error_code=error_code, raw_response=raw_response)
+
+class RateLimitExceededError(APIError):
+    """Raised when the API rate limit is exceeded."""
+    def __init__(self, message: str, error_code: Any = None, raw_response: Any = None, 
+                 headers: Any = None, retry_after_seconds: Optional[int] = None):
+        super().__init__(message, error_code=error_code, raw_response=raw_response, 
+                         headers=headers, retry_after_seconds=retry_after_seconds)
+
+class ContractNotFoundError(APIError):
+    """Raised when a contract is not found."""
+    def __init__(self, message: str, error_code: Any = None, raw_response: Any = None):
+        super().__init__(message, error_code=error_code, raw_response=raw_response)
+
+class OrderNotFoundError(APIError):
+    """Raised when an order is not found."""
+    def __init__(self, message: str, error_code: Any = None, raw_response: Any = None):
+        super().__init__(message, error_code=error_code, raw_response=raw_response)
+
+class OrderRejectedError(APIError):
+    """Raised when an order is rejected."""
+    def __init__(self, message: str, error_code: Any = None, raw_response: Any = None):
+        super().__init__(message, error_code=error_code, raw_response=raw_response)
+
+class InsufficientFundsError(APIError):
+    """Raised when there are insufficient funds for an operation."""
+    def __init__(self, message: str, error_code: Any = None, raw_response: Any = None):
+        super().__init__(message, error_code=error_code, raw_response=raw_response)
+
+class MaxPositionLimitError(APIError):
+    """Raised when a position limit is exceeded."""
+    def __init__(self, message: str, error_code: Any = None, raw_response: Any = None):
+        super().__init__(message, error_code=error_code, raw_response=raw_response)
+
+class MarketClosedError(APIError):
+    """Raised when an operation is attempted while the market is closed."""
+    def __init__(self, message: str, error_code: Any = None, raw_response: Any = None):
+        super().__init__(message, error_code=error_code, raw_response=raw_response)
+
+class ValueError(APIError): # This is your custom tsxapipy.api.exceptions.ValueError
+    """Raised when a value error occurs specific to the API's logic or data expectations."""
+    def __init__(self, message: str, error_code: Any = None, raw_response: Any = None):
+        super().__init__(message, error_code=error_code, raw_response=raw_response)

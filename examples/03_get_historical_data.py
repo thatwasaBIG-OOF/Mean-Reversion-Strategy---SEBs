@@ -14,7 +14,7 @@ import sys
 import os
 import logging
 from datetime import datetime, timedelta, date
-from typing import Optional, Any, List # Added List
+from typing import Optional, Any, List  
 
 # ---- sys.path modification ----
 src_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'src'))
@@ -33,11 +33,14 @@ from tsxapipy import (
     InvalidParameterError, 
     MAX_BARS_PER_REQUEST,
     DEFAULT_CONFIG_CONTRACT_ID,
+    MAX_BARS_PER_REQUEST, 
     UTC_TZ,
     authenticate,
     api_schemas # Import Pydantic schemas module
 )
 from tsxapipy.api.exceptions import APIResponseParsingError # Explicit import for parsing error
+from tsxapipy.api.contract_utils import get_futures_contract_details  
+from tsxapipy.api import schemas as api_schemas  
 
 # --- Configure Logging ---
 logging.basicConfig(

@@ -91,6 +91,7 @@ class ContractSearchResponse(BaseResponseModel):
 # --- Historical Data Models ---
 
 class HistoricalBarsRequest(BaseRequestModel):
+    account_id: Optional[int] = Field(None, alias="accountId") # <--- ADDED
     contract_id: Union[str, int] = Field(..., alias="contractId") 
     live: bool = False
     start_time: str = Field(..., alias="startTime") 
