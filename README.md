@@ -1,90 +1,70 @@
-# TopStep Data Library & Trading Suite for Python (`tsxapipy`)
+# tsxapipy: TopStep (ProjectX) API Python Library
 
-**Version:** 0.4.0 
+**Version:** 0.5.0 (Pydantic Integration & Stream Stability Refactor)
 
 ## Overview
 
-`tsxapipy` is designed for interacting with the TopStep (also referred to as ProjectX in some API documentation contexts) trading API. This suite provides a comprehensive toolkit for traders and developers looking to build automated trading strategies, perform data analysis, or manage their TopStep accounts programmatically.
+`tsxapipy` is a Python library designed for interacting with the TopStep (also referred to as ProjectX in some API documentation contexts) trading API. This suite provides a comprehensive toolkit for traders and developers looking to build automated trading strategies, perform data analysis, or manage their TopStep accounts programmatically.
+
+Version 0.5.0 introduces a significant refactor, deeply integrating **Pydantic V2** for robust request payload construction and response parsing/validation across all core API interactions. This enhances data integrity, provides clear data contracts, and improves the developer experience.
 
 ## Core Features
 
-*   **Robust Authentication & Session Management:**
-    *   Supports both API key-based and authorized application authentication methods via `tsxapipy.auth.authenticate()`.
-    *   **`APIClient` for REST:** Manages HTTP session, includes automatic session token revalidation for long-running applications making REST calls, ensuring tokens are fresh or renewed if expired/invalid.
-*   **Comprehensive HTTP API Client (`APIClient`):**
-    *   Provides intuitive Python methods for nearly all documented TopStep HTTP REST API endpoints.
-    *   **Account Management:** Retrieve account details, balances, and lists of active accounts.
-    *   **Contract Information:** Search for contracts by text description (e.g., "NQ") or by specific contract ID.
-    *   **Historical Data Retrieval:** Fetch historical bar data (OHLCV) with flexible parameters for timeframe (seconds, minutes, hours, day, week, month) and period.
-    *   **Full Order Lifecycle:**
-        *   Place various order types (Market, Limit, Stop, etc.).
-        *   Modify existing open orders (e.g., change price, size).
-        *   Cancel open orders.
-        *   Search and retrieve details of past and current orders.
-    *   **Position Management:**
-        *   Close entire open positions for a contract.
-        *   Partially close open positions by specifying a size.
-        *   Search and retrieve details of currently open positions.
-    *   **Trade History:** Search and retrieve records of executed trades.
-*   **Real-Time Data Streaming (via SignalR with Direct WebSocket & URL Token):**
-    *   `DataStream` (Market Hub) and `UserHubStream` (User Hub) classes for live data.
-    *   **Streamlined Connection:** Utilizes `skip_negotiation: True` for direct WebSocket connections, aligning with common efficient practices.
-    *   **Token Management for Streams:**
-        *   Stream classes (`DataStream`, `UserHubStream`) are initialized with an `APIClient` instance.
-        *   The initial authentication token (obtained via `APIClient`) is embedded directly into the WebSocket connection URL's query string (e.g., `wss://hub_url?access_token=TOKEN`).
-        *   **Application-Driven Token Refresh:** For long-lived stream connections, if the `APIClient`'s session token is refreshed (e.g., due to its internal revalidation logic for REST calls, or if the application explicitly re-authenticates), the application code is responsible for:
-            1.  Obtaining the new token from `api_client_instance.current_token`.
-            2.  Calling `stream_instance.update_token(new_api_token)` on any active stream instances.
-            This `update_token` method within the stream classes handles stopping the current connection, reconfiguring its URL with the new token, and restarting the stream to ensure continued authenticated communication.
-    *   Configured for automatic reconnection attempts by the underlying `signalrcore` library (using the last known valid URL with token until `update_token` is called with a new one).
-    *   Clear callback mechanisms for market data (quotes, trades, depth) and user data (account, orders, positions, user trades), as well as stream state changes (connected, disconnected, reconnecting, error) and general connection errors.
-*   **Advanced Historical Data Management (`HistoricalDataUpdater`):**
-    *   Efficiently fetches, stores, and updates historical bar data for specified instruments.
-    *   Utilizes the Parquet file format for optimized, columnar storage, enabling fast read/write operations, especially with `pandas`.
-    *   Includes intelligent gap-filling logic to ensure data integrity by identifying and fetching missing periods in the downloaded historical data.
-    *   Supports daily contract determination for futures and stores the source contract ID for traceability.
-    *   Allows for overriding fetch windows with specific start/end dates.
-*   **Practical Trading Utilities & Examples:**
-    *   **`OrderPlacer`:** A higher-level class for simplified order submission, modification, and cancellation, using user-friendly parameters and managing API interactions.
-    *   **Technical Indicators:** Includes foundational technical analysis indicators (e.g., Simple Moving Average - SMA, Exponential Moving Average - EMA) to aid in building trading logic.
-    *   **Example Trading Logic:** Provides examples of simple trade decision logic (e.g., SMA crossover) to demonstrate strategy implementation.
-*   **Enhanced Error Handling & Resilience:**
-    *   Defines a hierarchy of custom, specific exceptions (e.g., `APIError`, `APITimeoutError`, `AuthenticationError`, `OrderNotFoundError`, `ContractNotFoundError`, `MarketClosedError`) for more granular error identification and robust handling by consuming applications.
-    *   `APIClient` includes built-in retry mechanisms for transient network issues on REST calls.
-*   **Modular and Organized Design:**
-    *   Logically structured into clear sub-packages (`api`, `auth`, `common`, `config`, `historical`, `real_time`, `trading`) within `tsxapipy` for improved organization, maintainability, and ease of navigation and understanding.
-*   **Configuration Driven:**
-    *   Leverages `.env` files for managing API credentials, default parameters (like contract/account IDs for scripts), and environment-specific URLs (LIVE/DEMO), keeping sensitive data and configurations separate from source code.
-*   **Command-Line Interface (CLI) Scripts:**
-    *   Includes several ready-to-run CLI scripts for common tasks and demonstrations:
-        *   Fetching and updating historical data with various options (`fetch_historical_cli.py`).
-        *   Testing real-time market data streams for specific contracts (`market_data_tester_cli.py`).
-        *   Monitoring real-time user-specific data streams (`user_data_tester_cli.py`).
-        *   Dumping account information (`dump_accounts_cli.py`).
-        *   Running a basic example trading bot with SMA crossover logic (`trading_bot_cli.py`).
+*   **Pydantic-Driven API Client (`tsxapipy.api.client.APIClient`):**
+    *   All public methods utilize Pydantic models (from `tsxapipy.api.schemas`) for constructing request payloads and for parsing, validating, and returning API responses as Pydantic model instances.
+    *   Raises `APIResponseParsingError` on Pydantic validation failures.
+*   **Robust Authentication & Session Management (`tsxapipy.auth`):**
+    *   Supports API key-based authentication.
+    *   `APIClient` manages HTTP sessions and includes automatic session token revalidation and re-authentication for long-running applications.
+*   **Comprehensive HTTP REST API Coverage:**
+    *   **Account Management:** Retrieve account details and lists (`List[api_schemas.Account]`).
+    *   **Contract Information:** Search for contracts by text or ID (`List[api_schemas.Contract]`).
+    *   **Historical Data Retrieval:** Fetch historical bar data (`api_schemas.HistoricalBarsResponse` containing `List[api_schemas.BarData]`).
+    *   **Full Order Lifecycle:** Place, modify, cancel, and search orders using Pydantic models for requests and responses (e.g., `api_schemas.OrderPlacementResponse`, `api_schemas.OrderDetails`).
+    *   **Position Management:** Search, close, and partially close positions (`List[api_schemas.Position]`, `api_schemas.PositionManagementResponse`).
+    *   **Trade History:** Search and retrieve records of executed trades (`List[api_schemas.Trade]`).
+*   **Real-Time Data Streaming (`tsxapipy.real_time` via SignalR):**
+    *   `DataStream` for Market Hub (quotes, market trades, depth).
+    *   `UserHubStream` for User Hub (account updates, orders, positions, user trades).
+    *   **Initialization & Token Management:** Streams are initialized with an `APIClient` instance. The application is responsible for calling `stream_instance.update_token(new_api_token)` if the `APIClient`'s token is refreshed. Streams use direct WebSocket connections with the token embedded in the URL (`skip_negotiation: True`).
+    *   **Clear State Management:** Uses a shared `StreamConnectionState` enum. The `on_state_change_callback` receives the string name of the state.
+*   **Advanced Historical Data Management (`tsxapipy.historical.updater.HistoricalDataUpdater`):**
+    *   Efficiently fetches, stores (in Parquet format), and updates historical bar data.
+    *   Includes intelligent gap-filling logic and daily contract determination.
+*   **Practical Trading Utilities (`tsxapipy.trading.order_handler.OrderPlacer`):**
+    *   A higher-level class for simplified order submission, modification, and cancellation, using Pydantic models internally for API interactions.
+*   **Data Processing Pipeline (`tsxapipy.pipeline`):**
+    *   `LiveCandleAggregator` aggregates trades into candles, passing `pd.Series` to a callback.
+    *   `DataManager` orchestrates `APIClient`, `DataStream`, and `LiveCandleAggregator` instances (one per timeframe) to provide processed `pd.DataFrame` candle data. Ideal for charting applications.
+*   **Enhanced Error Handling & Resilience (`tsxapipy.api.exceptions`):**
+    *   Defines a hierarchy of custom, specific exceptions for granular error identification.
+    *   Includes `APIResponseParsingError` for Pydantic validation issues.
+*   **Configuration Driven (`tsxapipy.config`):**
+    *   Leverages `.env` files for managing API credentials, default parameters, and `LIVE`/`DEMO` environments.
+    *   Issues warnings for missing global `API_KEY`/`USERNAME`.
 
-## Project Structure
+## Project Structure (Simplified)
 
 
-topstep_data_suite/
+your_project_root/
 ├── src/
 │ └── tsxapipy/ # The core Python library
 │ ├── init.py
-│ ├── api/ # APIClient, contract utils, custom exceptions, error_mapper
-│ ├── auth.py # Authentication logic, token management
-│ ├── common/ # Shared utilities (e.g., time_utils, enums for OrderSide/OrderType)
-│ ├── config.py # Configuration loading from .env, URL management
+│ ├── api/ # APIClient, contract utils, Pydantic schemas, exceptions, error_mapper
+│ ├── auth.py # Authentication logic
+│ ├── common/ # Shared utilities (e.g., time_utils)
+│ ├── config.py # Configuration loading, URL management
 │ ├── historical/ # HistoricalDataUpdater, Parquet I/O, gap_detector
-│ ├── real_time/ # DataStream (Market Hub), UserHubStream (User Hub)
-│ └── trading/ # Indicators, trade decision logic, OrderPlacer
-├── scripts/ # Runnable CLI applications demonstrating library use
-├── examples/ # Focused code snippets and specific test cases (e.g., error code tests)
-├── tests/ # Unit and integration tests (pytest based)
+│ ├── pipeline/ # DataManager, LiveCandleAggregator
+│ ├── real_time/ # DataStream, UserHubStream, StreamConnectionState
+│ └── trading/ # Indicators, trade logic, OrderPlacer
+├── examples/ # Runnable example scripts demonstrating library use (updated for v0.5.0)
+├── scripts/ # CLI applications (e.g., fetch_historical_cli.py) (updated for v0.5.0)
+├── tests/ # Unit and integration tests
 ├── .env.example # Example environment file
 ├── requirements.txt # Python dependencies
 ├── README.md # This file
-├── LICENSE # Apache 2.0 License file
-└── CHANGELOG.md # Project changes log
+└── ...
 
 ## Installation
 
@@ -92,10 +72,10 @@ topstep_data_suite/
     *   Python 3.8+
     *   Git (for cloning)
 
-2.  **Clone the Repository:**
+2.  **Clone the Repository (if not installing from PyPI once available):**
     ```bash
-    git clone <your-repository-url> topstep_data_suite
-    cd topstep_data_suite
+    git clone <your-repository-url> tsxapipy_project
+    cd tsxapipy_project
     ```
 
 3.  **Create and Activate a Virtual Environment (Recommended):**
@@ -108,365 +88,248 @@ topstep_data_suite/
     ```
 
 4.  **Install Dependencies:**
+    From the project root (`tsxapipy_project/`):
     ```bash
     pip install -r requirements.txt
     ```
-    Ensure your `requirements.txt` includes (example, adjust as needed):
-    ```txt
-    requests
-    python-dotenv
-    pandas
-    pyarrow  # For Parquet support
-    pytz
-    signalrcore # Or the specific synchronous SignalR client library used (e.g., 0.9.5)
-    # For development (consider a requirements-dev.txt):
-    # pytest
-    # pytest-mock
-    # flake8
-    # black
-    # mypy
+    If you are developing `tsxapipy` itself, install it in editable mode:
+    ```bash
+    pip install -e .
     ```
 
 ## Configuration
 
-The library uses a `.env` file located in the project root (`topstep_data_suite/.env`) to manage sensitive credentials and configuration settings.
+The library uses a `.env` file located in your project root (e.g., `tsxapipy_project/.env`) to manage sensitive credentials and configuration settings.
 
-1.  Copy the example environment file:
+1.  **Copy the example environment file:**
     ```bash
     cp .env.example .env
     ```
-2.  **Edit `.env`** and replace placeholder values with your actual TopStep API Key, Username, and any other relevant defaults:
-    ```env
+
+2.  **Edit `.env`** and replace placeholder values:
+    ```dotenv
     # == Environment: "LIVE" or "DEMO" (defaults to "DEMO" if not set) ==
-    TRADING_ENVIRONMENT="DEMO" 
+    TRADING_ENVIRONMENT="DEMO"
 
     # == Core API Credentials (Required for API Key Auth) ==
     API_KEY="YOUR_TOPSTEP_API_KEY"
     USERNAME="YOUR_TOPSTEP_USERNAME"
 
     # == Optional: Default values for scripts & library components ==
-    DEFAULT_CONFIG_CONTRACT_ID="CON.F.US.NQ.M25" # Example: Default contract for bot/market data tester
-    DEFAULT_CONFIG_ACCOUNT_ID_TO_WATCH=""      # Example: Default account for user stream/trading bot (set your specific account ID)
+    # CONTRACT_ID="CON.F.US.NQ.M25" # Example
+    # ACCOUNT_ID_TO_WATCH=""       # Example (set your specific account ID)
 
-    # == Optional: For Authorized Application Auth (if you use this method) ==
-    # APP_PASSWORD="YOUR_APP_PASSWORD"
-    # APP_ID="YOUR_APP_ID"
-    # APP_VERIFY_KEY="YOUR_APP_VERIFY_KEY"
-
-    # == Optional: For specific integration tests (e.g., test_specific_history_gap.py) ==
-    # TEST_GAP_CONTRACT_ID="CON.F.US.ENQ.M25"
-    # TEST_GAP_LAST_TS="2025-05-16T04:20:00+00:00"
-
-    # == API URLs: Override only if absolutely necessary (e.g., for a private test environment) ==
-    # Default LIVE/DEMO URLs are typically hardcoded as fallbacks in config.py.
-    # API_BASE_URL_OVERRIDE_ENV="https://custom-gateway-api.yourdomain.com" 
-    # MARKET_HUB_URL_OVERRIDE_ENV="https://custom-rtc.yourdomain.com/hubs/market" 
-    # USER_HUB_URL_OVERRIDE_ENV="https://custom-rtc.yourdomain.com/hubs/user" 
+    # == Optional: Token Management (defaults usually fine) ==
+    # TOKEN_EXPIRY_SAFETY_MARGIN_MINUTES="30"
+    # DEFAULT_TOKEN_LIFETIME_HOURS="23.5"
     ```
-    *(Note: `.env` variable names like `DEFAULT_CONFIG_CONTRACT_ID` are used to avoid clashes if the library itself directly exports `CONTRACT_ID` from `config.py`)*
+    `tsxapipy.config` will load these. `API_KEY` and `USERNAME` are essential; warnings will be issued if they are missing.
 
 ## Core Library Usage
 
-### 1. Authentication & APIClient (for REST API)
-
-The primary way to interact with the HTTP REST API is through the `APIClient`.
+### 1. Authentication & `APIClient`
 
 ```python
 import logging
+from typing import List, Optional
 from tsxapipy import (
-    authenticate, 
-    APIClient, 
-    APIError, 
-    AuthenticationError,
-    ConfigurationError
+    authenticate, APIClient, ConfigurationError, AuthenticationError,
+    APIError, api_schemas
 )
+from tsxapipy.api.exceptions import APIResponseParsingError
 
-# Configure logging for your application
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s [%(levelname)s]: %(message)s')
-logger = logging.getLogger("MyApplication")
+logger = logging.getLogger("MyApp")
 
+api_client: Optional[APIClient] = None
 try:
-    logger.info("Authenticating with TopStepX API...")
-    initial_token, token_acquired_at = authenticate() # Uses credentials from .env via config.py
-    
-    api_client = APIClient(
-        initial_token=initial_token,
-        token_acquired_at=token_acquired_at
-        # reauth_username/reauth_api_key are pulled from config by default if needed by APIClient
-    )
-    logger.info("APIClient initialized successfully.")
+    token_str, acquired_at_dt = authenticate() # Uses .env by default
+    logger.info(f"Authenticated. Token acquired: {acquired_at_dt.isoformat()}")
 
-    # Example: Get account details
-    accounts = api_client.get_accounts(only_active=True)
-    if accounts:
-        for account in accounts:
-            logger.info(f"Active Account: {account.get('name')} (ID: {account.get('id')}), Balance: {account.get('balance')}")
-    else:
-        logger.info("No active accounts found.")
+    api_client = APIClient(initial_token=token_str, token_acquired_at=acquired_at_dt)
+    logger.info("APIClient initialized.")
 
-except ConfigurationError as e:
-    logger.error(f"SETUP ERROR: {e}. Ensure .env file is correct and has API_KEY/USERNAME.")
-except AuthenticationError as e:
-    logger.error(f"AUTHENTICATION FAILED: {e}")
-except APIError as e:
-    logger.error(f"API operation failed: {e}")
-except Exception as e:
-    logger.error(f"An unexpected error occurred: {e}", exc_info=True)
+    # Example: Get active accounts (returns List[api_schemas.Account])
+    accounts: List[api_schemas.Account] = api_client.get_accounts(only_active=True)
+    for acc_model in accounts:
+        logger.info(f"  Account ID: {acc_model.id}, Name: {acc_model.name}, Balance: {acc_model.balance}")
 
-The APIClient automatically handles session token revalidation for its HTTP REST API calls.
+except ConfigurationError as e: logger.error(f"SETUP ERROR: {e}")
+except AuthenticationError as e: logger.error(f"AUTHENTICATION FAILED: {e}")
+except APIResponseParsingError as e: logger.error(f"RESPONSE PARSING ERROR: {e}. Raw: {e.raw_response_text}")
+except APIError as e: logger.error(f"API Call Failed: {e}")
+except Exception as e: logger.error(f"Unexpected error: {e}", exc_info=True)
 
 2. Fetching Historical Data (HistoricalDataUpdater)
+# Assuming api_client is initialized
+from tsxapipy.historical import HistoricalDataUpdater
 
-Use the HistoricalDataUpdater class for managing local Parquet datasets.
-
-from tsxapipy import HistoricalDataUpdater
-# ... (assuming api_client is initialized as above) ...
+SYMBOL_ROOT = "NQ"
+MAIN_PARQUET_FILE = f"data/{SYMBOL_ROOT.lower()}_1min_data.parquet" # Ensure 'data' dir exists
 
 try:
-    if api_client: # Ensure api_client was initialized
-        updater = HistoricalDataUpdater(
-            api_client=api_client, 
-            symbol_root="NQ",      
-            main_parquet_file="data/nq_1min_data.parquet", # Example path
-            temp_file_suffix="_temp_update",
-            api_bar_unit=2, # 2 for Minute
-            api_bar_unit_number=1, # For 1-minute bars
-            fetch_days_if_new=90 
-        )
-        logger.info("Attempting to update historical data for NQ...")
-        updater.update_data()
-        logger.info("Historical data update process complete for NQ.")
-except APIError as e: # Catch errors specific to historical data fetching if needed
-    logger.error(f"API error during historical data update: {e}")
+    updater = HistoricalDataUpdater(
+        api_client=api_client, symbol_root=SYMBOL_ROOT,
+        main_parquet_file=MAIN_PARQUET_FILE, temp_file_suffix="_update_temp",
+        api_bar_unit=2, api_bar_unit_number=1, # 1-minute bars
+        fetch_days_if_new=90
+    )
+    logger.info(f"Updating historical data for {SYMBOL_ROOT}...")
+    updater.update_data()
+    logger.info(f"Historical data update complete for {SYMBOL_ROOT}.")
 except Exception as e:
-    logger.error(f"Unexpected error during historical data update: {e}", exc_info=True)
+    logger.error(f"Error during historical update: {e}", exc_info=True)
 
 3. Real-Time Market Data Streaming (DataStream)
+# Assuming api_client is initialized
+from tsxapipy import DataStream, StreamConnectionState
 
-The DataStream class connects to the Market Hub.
+def my_market_quote_handler(quote_data: dict): logger.info(f"Quote: {quote_data}")
+def my_market_state_handler(state_name: str): logger.info(f"Market Stream State: {state_name}")
 
-import time
-from tsxapipy import DataStream # Assuming api_client already initialized
-
-# Define your callback functions
-def my_quote_handler(quote_data):
-    logger.info(f"Market Quote: {quote_data.get('bp')}@{quote_data.get('bs')} / {quote_data.get('ap')}@{quote_data.get('as')}")
-
-def my_market_trade_handler(trade_data):
-    logger.info(f"Market Trade: Px={trade_data.get('price')}, Sz={trade_data.get('size')}")
-
-def my_market_stream_state_handler(state: str):
-    logger.info(f"Market Stream State: {state}")
-
-market_stream_instance: Optional[DataStream] = None
-CONTRACT_TO_STREAM_MARKET = "CON.F.US.NQ.M25" # Example
-
+MARKET_CONTRACT_ID = "CON.F.US.NQ.M25" # Example
+market_stream: Optional[DataStream] = None
 try:
-    if api_client_instance: # Ensure api_client is available from previous steps
-        market_stream_instance = DataStream(
-            api_client=api_client_instance, 
-            contract_id_to_subscribe=CONTRACT_TO_STREAM_MARKET,
-            on_quote_callback=my_quote_handler,
-            on_trade_callback=my_market_trade_handler, # Optional
-            on_state_change_callback=my_market_stream_state_handler
-        )
-        if market_stream_instance.start():
-            logger.info(f"Market stream started for {CONTRACT_TO_STREAM_MARKET}. Monitoring... (Press Ctrl+C to stop)")
-            # Keep alive loop for the example
-            while True: 
-                # Application is responsible for calling market_stream_instance.update_token() if APIClient token changes
-                time.sleep(10) 
-        else:
-            logger.error(f"Failed to start market stream for {CONTRACT_TO_STREAM_MARKET}.")
-except KeyboardInterrupt:
-    logger.info("Market stream monitoring interrupted.")
-except Exception as e:
-    logger.error(f"Error in market stream example: {e}", exc_info=True)
-finally:
-    if market_stream_instance:
-        logger.info("Stopping market stream...")
-        market_stream_instance.stop()
+    market_stream = DataStream(
+        api_client=api_client, contract_id_to_subscribe=MARKET_CONTRACT_ID,
+        on_quote_callback=my_market_quote_handler,
+        on_state_change_callback=my_market_state_handler
+    )
+    if market_stream.start():
+        logger.info(f"Market stream started for {MARKET_CONTRACT_ID}. Status: {market_stream.connection_status.name}")
+        # Keep alive (e.g., time.sleep(60)) and periodically call:
+        # market_stream.update_token(api_client.current_token)
+        # For this example, we'll stop it after a short delay
+        # time.sleep(10); market_stream.stop()
+    else:
+        logger.error(f"Failed to start market stream. Status: {market_stream.connection_status.name}")
+except Exception as e: logger.error(f"Error with DataStream: {e}", exc_info=True)
+# finally:
+#     if market_stream: market_stream.stop()
 
 4. Real-Time User Data Streaming (UserHubStream)
+# Assuming api_client is initialized
+from tsxapipy import UserHubStream
 
-The UserHubStream class connects to the User Hub for account-specific events.
+def my_user_order_handler(order_data: dict): logger.info(f"Order Update: {order_data}")
+def my_user_state_handler(state_name: str): logger.info(f"User Stream State: {state_name}")
 
-from tsxapipy import UserHubStream # Assuming api_client already initialized
-# from tsxapipy.config import DEFAULT_CONFIG_ACCOUNT_ID_TO_WATCH # Or get from .env
-
-# Assuming ACCOUNT_ID_TO_WATCH is loaded
-ACCOUNT_TO_MONITOR = DEFAULT_CONFIG_ACCOUNT_ID_TO_WATCH or 12345 # Fallback example
-
-def my_order_update_handler(order_data):
-    logger.info(f"My Order Update (Acct: {ACCOUNT_TO_MONITOR}): ID={order_data.get('id')}, Status={order_data.get('status')}")
-# ... other user-specific callbacks (account, position, trade)
-
-def my_user_stream_state_handler(state: str):
-    logger.info(f"User Stream (Acct: {ACCOUNT_TO_MONITOR}) State: {state}")
-
-user_stream_instance: Optional[UserHubStream] = None
+ACCOUNT_ID_TO_MONITOR = 12345 # Replace with your actual account ID from .env or config
+user_stream: Optional[UserHubStream] = None
 try:
-    if api_client_instance and ACCOUNT_TO_MONITOR:
-        user_stream_instance = UserHubStream(
-            api_client=api_client_instance,
-            account_id_to_watch=ACCOUNT_TO_MONITOR,
-            on_order_update=my_order_update_handler,
-            # on_account_update=..., on_position_update=..., on_user_trade_update=...
-            on_state_change_callback=my_user_stream_state_handler
+    if ACCOUNT_ID_TO_MONITOR > 0 : # Ensure valid account ID
+        user_stream = UserHubStream(
+            api_client=api_client, account_id_to_watch=ACCOUNT_ID_TO_MONITOR,
+            on_order_update=my_user_order_handler,
+            on_state_change_callback=my_user_state_handler
         )
-        if user_stream_instance.start():
-            logger.info(f"User Hub stream started for Account {ACCOUNT_TO_MONITOR}. Monitoring... (Press Ctrl+C to stop)")
-            while True: time.sleep(10) # Keep alive
+        if user_stream.start():
+            logger.info(f"User stream started for account {ACCOUNT_ID_TO_MONITOR}. Status: {user_stream.connection_status.name}")
+            # Keep alive and periodically call:
+            # user_stream.update_token(api_client.current_token)
+            # time.sleep(10); user_stream.stop()
         else:
-            logger.error(f"Failed to start User Hub stream for Account {ACCOUNT_TO_MONITOR}.")
-# ... (exception handling and finally block similar to DataStream example) ...
-except KeyboardInterrupt: logger.info("User stream monitoring interrupted.")
-except Exception as e: logger.error(f"Error in user stream example: {e}", exc_info=True)
-finally:
-    if user_stream_instance: logger.info("Stopping user stream..."); user_stream_instance.stop()
+            logger.error(f"Failed to start user stream. Status: {user_stream.connection_status.name}")
+except Exception as e: logger.error(f"Error with UserHubStream: {e}", exc_info=True)
+# finally:
+#     if user_stream: user_stream.stop()
 
-Important Note on Stream Token Refresh (Application Responsibility):
-
-The DataStream and UserHubStream classes are initialized using an APIClient instance. They use this client to fetch their initial authentication token, which is then embedded in the WebSocket connection URL (when using skip_negotiation: True).
-
-If the APIClient's session token is refreshed during the lifetime of an active stream (e.g., due to APIClient's internal revalidation logic for REST calls, or if the application explicitly re-authenticates), the application code is responsible for propagating this new token to the stream instances.
-
-This is done by:
-
-Obtaining the latest token from your api_client_instance.current_token.
-
-Calling your_stream_instance.update_token(new_api_token) on any active DataStream or UserHubStream objects.
-
-The update_token() method within the stream classes will then handle stopping the current connection, reconfiguring its connection URL with the new token, and restarting the stream. The underlying signalrcore library's automatic reconnection feature will attempt to use the last configured URL (with its then-current token) until update_token() provides it with a new one for a fresh connection cycle.
+Important Note on Stream Token Refresh: For long-lived stream connections, your application must periodically get the latest token from api_client.current_token and call your_stream_instance.update_token(new_token).
 
 5. Placing and Managing Orders (OrderPlacer)
-
-Use the OrderPlacer class for a simplified interface to trading operations.
-
-from tsxapipy import OrderPlacer
-# from tsxapipy.common.enums import OrderSide # If you implement enums
-
-# Assuming api_client_instance and relevant ACCOUNT_ID, CONTRACT_ID are available
-# ACCOUNT_ID_FOR_TRADING = DEFAULT_CONFIG_ACCOUNT_ID_TO_WATCH
-# CONTRACT_FOR_TRADING = DEFAULT_CONFIG_CONTRACT_ID
+# Assuming api_client and ACCOUNT_ID_TO_MONITOR are initialized
+from tsxapipy.trading import OrderPlacer
 
 try:
-    if api_client_instance and ACCOUNT_ID_FOR_TRADING and CONTRACT_FOR_TRADING:
-        order_placer = OrderPlacer(
-            api_client=api_client_instance,
-            account_id=ACCOUNT_ID_FOR_TRADING,
-            default_contract_id=CONTRACT_FOR_TRADING
-        )
-        logger.info("OrderPlacer initialized.")
+    order_placer = OrderPlacer(api_client=api_client, account_id=ACCOUNT_ID_TO_MONITOR)
+    buy_order_id: Optional[int] = order_placer.place_market_order(side="BUY", size=1, contract_id=MARKET_CONTRACT_ID)
+    if buy_order_id:
+        logger.info(f"Market BUY order submitted, API Order ID: {buy_order_id}")
+    else:
+        logger.error("Failed to place market BUY order.")
+except Exception as e: logger.error(f"OrderPlacer error: {e}", exc_info=True)
 
-        # Place a market buy order (ensure OrderSide.BUY maps to your internal representation "BUY" or 0)
-        buy_order_id = order_placer.place_market_order(side="BUY", size=1) 
-        if buy_order_id:
-            logger.info(f"Market buy order submitted, API Order ID: {buy_order_id}")
-            # time.sleep(2) # Allow order to process
-            # cancelled = order_placer.cancel_order(order_id=buy_order_id)
-            # logger.info(f"Attempt to cancel order {buy_order_id}: {cancelled}")
-        else:
-            logger.error("Failed to place market buy order.")
-except Exception as e:
-    logger.error(f"Error with OrderPlacer example: {e}", exc_info=True)
+6. Data Processing Pipeline (DataManager)
 
-Refer to tsxapipy/trading/order_handler.py for more OrderPlacer methods.
+tsxapipy.pipeline.DataManager is designed for applications (like charting) that need managed, multi-timeframe candle data.
+
+from tsxapipy.pipeline import DataManager
+import pandas as pd
+
+# Assuming api_client is available
+my_data_manager = DataManager()
+try:
+    if my_data_manager.initialize_components(contract_id=MARKET_CONTRACT_ID): # Uses internal APIClient
+        my_data_manager.load_initial_history(num_candles_to_load=100) # Optional
+        if my_data_manager.start_streaming():
+            logger.info("DataManager streaming started.")
+            # In an app, you'd periodically call get_chart_data in a callback
+            # time.sleep(10) # Let it stream for a bit
+            df_5min: pd.DataFrame = my_data_manager.get_chart_data(timeframe_seconds=300)
+            if not df_5min.empty:
+                logger.info(f"DataManager: Latest 5-min candle:\n{df_5min.iloc[-1] if not df_5min.empty else 'None'}")
+            # Remember periodic my_data_manager.update_stream_token_if_needed()
+        my_data_manager.stop_streaming()
+except Exception as e: logger.error(f"DataManager error: {e}", exc_info=True)
 
 Error Handling
 
-The library defines custom exceptions in tsxapipy.api.exceptions (e.g., APIError, AuthenticationError). Always wrap library calls in try...except blocks.
+The library defines custom exceptions in tsxapipy.api.exceptions. Key ones include:
 
-from tsxapipy import APIError, APITimeoutError, AuthenticationError, ConfigurationError
-import requests # For lower-level network errors if not caught by APIClient's retries
+ConfigurationError
+
+AuthenticationError
+
+APIError (and its subclasses like ContractNotFoundError, InvalidParameterError)
+
+APIResponseParsingError (when API response fails Pydantic validation)
+
+Wrap library calls in try...except blocks:
 
 try:
-    # ... library call ...
+    # ... tsxapipy calls ...
     pass
-except ConfigurationError as e:
-    logger.error(f"Configuration Error: {e}")
-except AuthenticationError as e:
-    logger.error(f"Authentication Failed: {e}")
-except APITimeoutError:
-    logger.error("API request timed out.")
-except APIError as e: # General tsxapipy API error
-    logger.error(f"tsxapipy API Error: Code {e.error_code if hasattr(e, 'error_code') else 'N/A'}, Message: {e}")
-except requests.exceptions.RequestException as e: # Lower-level network
-    logger.error(f"Network request failed: {e}")
-except Exception as e:
-    logger.error(f"An unexpected error: {e}", exc_info=True)
+except APIResponseParsingError as e_parse: logger.error(f"Parsing Error: {e_parse}. Raw: {e_parse.raw_response_text}")
+except APIError as e_api: logger.error(f"API Error: {e_api}")
+except ConfigurationError as e_conf: logger.error(f"Config Error: {e_conf}")
+# ... other specific exceptions or general Exception
 
-CLI Scripts
+Pydantic Schemas (tsxapipy.api.schemas)
 
-The scripts/ directory contains several useful command-line tools:
+All API request and response data structures are defined as Pydantic V2 models in tsxapipy.api.schemas. This provides:
 
-dump_accounts_cli.py: Fetches and displays details of your trading accounts.
+Clear data contracts.
 
-fetch_historical_cli.py: Downloads historical bar data and stores it in Parquet files.
+Automatic validation of incoming API data.
 
-market_data_tester_cli.py: Connects to the Market Hub for real-time quotes, trades, depth.
+Type-hinted access to response data.
+APIClient methods return instances of these Pydantic models (e.g., api_schemas.Account, api_schemas.HistoricalBarsResponse).
 
-user_data_tester_cli.py (formerly order_watcher_cli.py): Connects to the User Hub for account, order, position, and trade updates.
+CLI Scripts & Examples
 
-trading_bot_cli.py: An example trading bot demonstrating library integration.
+scripts/ directory: Contains ready-to-run CLI applications (e.g., fetch_historical_cli.py, trading_bot_cli.py).
 
-Running Scripts:
-Navigate to the topstep_data_suite root directory. Ensure your virtual environment is activated and .env is configured.
-
-python scripts/<script_name.py> [arguments]
-
-Example:
-
-python scripts/fetch_historical_cli.py --symbol_root NQ --api_period 1min --output_dir data/historical_nq --debug
-
-Use the --help flag for each script to see its available arguments.
+examples/ directory: Contains focused code snippets demonstrating specific library features (e.g., 01_authenticate_and_get_accounts.py, 12_dedicated_market_data_stream.py).
+All scripts and examples are updated to reflect v0.5.0 changes.
 
 Development and Testing
 
-Tests: Located in the tests/ directory (unit/ and integration/).
+Tests: Located in the tests/ directory. Use pytest to run.
 
-Running Tests: From the project root, use pytest:
+Linters/Formatters: flake8 and black are recommended. mypy for type checking.
 
-pytest
+Key Known Points / TODOs (v0.5.0)
 
-Linters/Formatters: We recommend flake8 and black. mypy for type checking.
+API_NUMERIC_ID_FIELD_HYPOTHESIS: The instrument_id field in api.schemas.Contract (API instrumentId) needs live API verification for its role as a numeric ID for history calls.
 
-Future Enhancements (Planned/Considered)
+OrderBase.linked_order_id Alias: The Pydantic alias linkedOrderld needs verification against API documentation for correct casing.
 
-Full implementation for all User Hub and Market Hub event subscriptions (e.g., market depth parsing).
-
-More sophisticated order/position tracking in OrderPlacer and TradingBot.
-
-Pydantic models for API request/response validation and stream message structuring.
-
-Advanced examples, strategy backtesting tools.
-
-Potential asyncio version of the library.
-
-Full packaging for pip installation from PyPI.
-
-Enhanced contract roll logic in HistoricalDataUpdater.
+Pydantic Model Refinements: Review Optional fields and Any type hints in api.schemas.py for more specificity.
 
 Contributing
 
-We welcome contributions! Please see CONTRIBUTING.md (if available) or open an issue to discuss your ideas. General guidelines:
-
-Fork the repository.
-
-Create a feature or bugfix branch.
-
-Install dependencies, including development tools (e.g., from requirements-dev.txt).
-
-Write clean, PEP 8 compliant code with docstrings and comments.
-
-Add unit tests for new functionality or bug fixes. Ensure all tests pass.
-
-Update README.md or other documentation if your changes affect usage.
-
-Format code with black and lint with flake8.
-
-Submit a Pull Request with a clear description of your changes.
+Contributions are welcome! Please see CONTRIBUTING.md (if available) or open an issue to discuss your ideas.
 
 License
 
-This project is licensed under the Apache License 2.0. A copy of the license can be found in the LICENSE file in the root directory of this source tree.
+This project is licensed under the Apache License 2.0. See the LICENSE file.
