@@ -41,7 +41,7 @@ def run_example():
         logger.info("APIClient initialized.")
 
         # --- Search by text ---
-        search_query = "GC" # Example: Search for Gold futures
+        search_query = "NQ" # Example: Search for Gold futures
         logger.info("\nSearching for contracts with text: '%s'...", search_query)
         
         # api_client.search_contracts now returns List[api_schemas.Contract]

@@ -3,9 +3,10 @@
 import logging
 import pandas as pd
 import numpy as np
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
 from typing import Dict, List, Callable, Optional, Any, Union, Tuple
 import threading # Ensure threading is imported if df_lock is used
+import time
 
 # Import from tsxapipy package
 from tsxapipy.common.time_utils import UTC_TZ
@@ -246,6 +247,8 @@ class DataManager:
         self.is_streaming = False # Ensure is_streaming is reset
 
     def _pass_trade_to_aggregators(self, trade_data: Dict[str, Any]):
+        self.logger.info(f"DM _pass_trade_to_aggregators CALLED with trade: Price={trade_data.get('Price')}, Vol={trade_data.get('Volume')}, TS={trade_data.get('Timestamp')}")
+
         """Passes a single trade from DataStream to all registered candle aggregators."""
         if not isinstance(trade_data, dict):
             self.logger.warning(f"DM: _pass_trade_to_aggregators received non-dict trade_data: {type(trade_data)}")
@@ -431,52 +434,117 @@ class DataManager:
                self.all_candles_dfs.get(timeframe_seconds, pd.DataFrame()).empty:
                 self.all_candles_dfs[timeframe_seconds] = self._create_empty_candles_df()
 
-    def _handle_new_candle_data_from_aggregator(self, candle_data_series: pd.Series,
+
+    def _handle_new_candle_data_from_aggregator(self, 
+                                                candle_data_series: pd.Series,
                                                 is_forming_candle: bool, 
                                                 timeframe_sec: int):
+        """
+        Handles new candle data (pd.Series) from LiveCandleAggregator.
+        Updates the corresponding DataFrame, calculates indicators, and manages data integrity.
+        Includes detailed logging for debugging MA issues.
+        """
+        self.logger.info(
+            f"DM _handle_new_candle_data CALLED ({timeframe_sec}s): "
+            f"Time='{candle_data_series.get('Time')}', "
+            f"C={candle_data_series.get('Close')}, V={candle_data_series.get('Volume')}, "
+            f"IsForming={is_forming_candle}"
+        )
+
+        func_exec_start_time = time.monotonic()
+
+        current_logger = self.logger 
+
+        current_logger.logger.info(
+            f"DM _handle_new_candle_data CALLED ({timeframe_sec}s): "
+            f"Time='{candle_data_series.get('Time')}', "
+            f"C={candle_data_series.get('Close')}, V={candle_data_series.get('Volume')}, "
+            f"IsForming={is_forming_candle}"
+        )
+
+        # --- LOG INPUT ---
         if not isinstance(candle_data_series, pd.Series) or candle_data_series.empty:
-            self.logger.warning(f"DM HandleNewCandle ({timeframe_sec}s): Rcvd invalid/empty candle_data_series. Skipping.")
+            current_logger.warning(f"DM HandleNewCandle ({timeframe_sec}s): Received invalid or empty candle_data_series. Skipping.")
             return
 
-        required_keys = ['Time', 'Open', 'High', 'Low', 'Close', 'Volume'] 
+        current_logger.debug(
+            f"DM HandleNewCandle ({timeframe_sec}s) INPUT: Time='{candle_data_series.get('Time')}', "
+            f"O={candle_data_series.get('Open')}, H={candle_data_series.get('High')}, "
+            f"L={candle_data_series.get('Low')}, C={candle_data_series.get('Close')}, "
+            f"V={candle_data_series.get('Volume')}, IsForming={is_forming_candle}"
+        )
+
+        required_keys = ['Time', 'Open', 'High', 'Low', 'Close', 'Volume']
         if not all(key in candle_data_series.index for key in required_keys):
-            self.logger.warning(f"DM HandleNewCandle ({timeframe_sec}s): Candle series missing required keys. Data: {candle_data_series.to_dict()}. Skipping.")
+            current_logger.warning(
+                f"DM HandleNewCandle ({timeframe_sec}s): Candle series missing required keys "
+                f"(need {required_keys}). Got: {list(candle_data_series.index)}. Data: {candle_data_series.to_dict()}. Skipping."
+            )
             return
         
+        # --- Timestamp Processing: Ensure UTC pd.Timestamp ---
         try:
             candle_time_input = candle_data_series['Time']
-            candle_time_pd_utc: pd.Timestamp
+            candle_time_pd_utc: pd.Timestamp 
 
             if isinstance(candle_time_input, datetime):
-                candle_time_pd_utc = pd.Timestamp(candle_time_input, tz='UTC') if candle_time_input.tzinfo is None \
-                                     else pd.Timestamp(candle_time_input).tz_convert('UTC')
+                if candle_time_input.tzinfo is None: 
+                    current_logger.debug(f"DM HandleNewCandle ({timeframe_sec}s): Localizing naive datetime '{candle_time_input}' to UTC.")
+                    candle_time_pd_utc = pd.Timestamp(candle_time_input, tz='UTC')
+                elif str(candle_time_input.tzinfo).upper() != 'UTC': 
+                    current_logger.debug(f"DM HandleNewCandle ({timeframe_sec}s): Converting non-UTC datetime '{candle_time_input}' to UTC.")
+                    candle_time_pd_utc = pd.Timestamp(candle_time_input).tz_convert('UTC')
+                else: 
+                    candle_time_pd_utc = pd.Timestamp(candle_time_input) 
             elif isinstance(candle_time_input, pd.Timestamp):
-                candle_time_pd_utc = candle_time_input.tz_localize('UTC', ambiguous='infer', nonexistent='NaT') if candle_time_input.tzinfo is None \
-                                     else candle_time_input.tz_convert('UTC')
+                if candle_time_input.tzinfo is None: 
+                    candle_time_pd_utc = candle_time_input.tz_localize('UTC', ambiguous='infer', nonexistent='NaT')
+                elif str(candle_time_input.tzinfo).upper() != 'UTC': 
+                    candle_time_pd_utc = candle_time_input.tz_convert('UTC')
+                else: 
+                    candle_time_pd_utc = candle_time_input
             else: 
+                current_logger.debug(f"DM HandleNewCandle ({timeframe_sec}s): Parsing timestamp string '{candle_time_input}' as UTC.")
                 candle_time_pd_utc = pd.Timestamp(str(candle_time_input), tz='UTC')
 
             if pd.isna(candle_time_pd_utc): 
                 raise ValueError(f"Timestamp '{candle_data_series.get('Time')}' became NaT after processing.")
         except Exception as e_ts:
-            self.logger.error(f"DM HandleNewCandle ({timeframe_sec}s): Invalid 'Time' in candle series: {e_ts}. Skipping."); return
+            current_logger.error(f"DM HandleNewCandle ({timeframe_sec}s): Invalid 'Time' in candle series: {e_ts}. Skipping candle."); return
 
+        # --- OHLCV Processing: Ensure numeric and valid relationships ---
         new_row_data_ohlcv = {}
+        conversion_successful = True
         for key in ['Open', 'High', 'Low', 'Close', 'Volume']:
             try: 
                 val = float(candle_data_series[key])
-                if key != 'Volume' and val < 0 : val = abs(val) 
+                if val < 0 and key != 'Volume': 
+                    current_logger.warning(f"DM HandleNewCandle ({timeframe_sec}s): Negative {key} ('{val}'). Using abs.")
+                    val = abs(val)
+                elif val < 0 and key == 'Volume':
+                    current_logger.warning(f"DM HandleNewCandle ({timeframe_sec}s): Negative volume ('{val}'). Setting to 0.")
+                    val = 0.0
                 new_row_data_ohlcv[key] = val
             except (ValueError, TypeError, KeyError): 
-                self.logger.error(f"DM HandleNewCandle ({timeframe_sec}s): Invalid value for {key} ('{candle_data_series.get(key)}'). Skipping."); return
+                current_logger.error(f"DM HandleNewCandle ({timeframe_sec}s): Invalid/missing value for {key} ('{candle_data_series.get(key)}'). Skipping candle.")
+                conversion_successful = False
+                break
+        if not conversion_successful: return
         
         if new_row_data_ohlcv['High'] < new_row_data_ohlcv['Low']:
-            self.logger.warning(f"DM HandleNewCandle ({timeframe_sec}s): High < Low. Swapping.")
+            current_logger.warning(
+                f"DM HandleNewCandle ({timeframe_sec}s): High < Low ({new_row_data_ohlcv['High']} < {new_row_data_ohlcv['Low']}) "
+                f"for candle {candle_time_pd_utc.isoformat()}. Swapping."
+            )
             new_row_data_ohlcv['High'], new_row_data_ohlcv['Low'] = new_row_data_ohlcv['Low'], new_row_data_ohlcv['High']
-        
+        new_row_data_ohlcv['Open'] = max(min(new_row_data_ohlcv['Open'], new_row_data_ohlcv['High']), new_row_data_ohlcv['Low'])
+        new_row_data_ohlcv['Close'] = max(min(new_row_data_ohlcv['Close'], new_row_data_ohlcv['High']), new_row_data_ohlcv['Low'])
+
+        # --- DataFrame Update Logic (thread-safe) ---
         with self.df_lock:
             current_df = self.all_candles_dfs.get(timeframe_sec)
             if current_df is None: 
+                current_logger.error(f"DM HandleNewCandle ({timeframe_sec}s): DataFrame was None, this should not happen. Re-initializing.")
                 current_df = self._create_empty_candles_df()
                 self.all_candles_dfs[timeframe_sec] = current_df
 
@@ -484,9 +552,9 @@ class DataManager:
             last_df_time_utc: Optional[pd.Timestamp] = None
 
             if not current_df.empty and 'Time' in current_df.columns and current_df['Time'].notna().any():
-                valid_times = current_df['Time'].dropna()
+                valid_times = current_df['Time'].dropna() 
                 if not valid_times.empty:
-                    last_df_time_utc = valid_times.iloc[-1]
+                    last_df_time_utc = valid_times.iloc[-1] 
             
             action = "unknown"
             if last_df_time_utc is not None: 
@@ -495,26 +563,36 @@ class DataManager:
                 elif candle_time_pd_utc > last_df_time_utc:
                     action = "append"
                 else: 
-                    self.logger.warning(f"DM ({timeframe_sec}s): Received out-of-order candle data (New: {candle_time_pd_utc.isoformat()}, Last in DF: {last_df_time_utc.isoformat()}). Ignoring this candle.")
-                    return
+                    current_logger.warning(
+                        f"DM HandleNewCandle ({timeframe_sec}s): Received out-of-order candle data "
+                        f"(New: {candle_time_pd_utc.isoformat()}, Last in DF: {last_df_time_utc.isoformat()}). Ignoring this candle."
+                    )
+                    return 
             else: 
                 action = "append_to_empty"
-                self.logger.debug(f"DM ({timeframe_sec}s): DataFrame is empty or has no valid last timestamp. Appending new candle: {candle_time_pd_utc.isoformat()}")
+                current_logger.debug(
+                    f"DM HandleNewCandle ({timeframe_sec}s): DataFrame is empty or has no valid last timestamp. "
+                    f"Appending new candle: {candle_time_pd_utc.isoformat()}"
+                )
 
-            temp_df_for_concat = None
             if action == "update":
                 last_idx = current_df.index[-1]
-                # Do not update Open on an existing candle, only High, Low, Close, Volume
-                current_df.loc[last_idx, 'High'] = max(current_df.loc[last_idx, 'High'], new_row_data_ohlcv['High']) if pd.notna(current_df.loc[last_idx, 'High']) else new_row_data_ohlcv['High']
-                current_df.loc[last_idx, 'Low'] = min(current_df.loc[last_idx, 'Low'], new_row_data_ohlcv['Low']) if pd.notna(current_df.loc[last_idx, 'Low']) else new_row_data_ohlcv['Low']
+                # Keep existing Open if it's already set for this forming candle
+                if pd.isna(current_df.loc[last_idx, 'Open']):
+                    current_df.loc[last_idx, 'Open'] = new_row_data_ohlcv['Open']
+                
+                current_df.loc[last_idx, 'High'] = max(current_df.loc[last_idx, 'High'] if pd.notna(current_df.loc[last_idx, 'High']) else -np.inf, 
+                                                       new_row_data_ohlcv['High'])
+                current_df.loc[last_idx, 'Low'] = min(current_df.loc[last_idx, 'Low'] if pd.notna(current_df.loc[last_idx, 'Low']) else np.inf, 
+                                                      new_row_data_ohlcv['Low'])
                 current_df.loc[last_idx, 'Close'] = new_row_data_ohlcv['Close']
                 current_df.loc[last_idx, 'Volume'] = (current_df.loc[last_idx, 'Volume'] if pd.notna(current_df.loc[last_idx, 'Volume']) else 0) + new_row_data_ohlcv['Volume']
-                # Time is already set and should match
                 df_for_processing = current_df
+                current_logger.debug(f"DM HandleNewCandle ({timeframe_sec}s): Updated forming candle for {candle_time_pd_utc.isoformat()}")
             
             elif action == "append" or action == "append_to_empty":
                 new_row_dict = {'Time': candle_time_pd_utc, **new_row_data_ohlcv}
-                for col_name in self.candle_dtypes.keys():
+                for col_name in self.candle_dtypes.keys(): # Ensure all schema columns are present
                     if col_name not in new_row_dict: new_row_dict[col_name] = np.nan
                 
                 temp_df_for_concat = pd.DataFrame([new_row_dict])
@@ -523,26 +601,114 @@ class DataManager:
                 if action == "append_to_empty" or current_df.empty:
                     df_for_processing = temp_df_for_concat
                 else:
-                    df_for_processing = pd.concat([current_df, temp_df_for_concat], ignore_index=True)
+                    # Ensure current_df schema before concat if there's any doubt
+                    current_df_schema_checked = self._ensure_df_schema(current_df.copy())
+                    df_for_processing = pd.concat([current_df_schema_checked, temp_df_for_concat], ignore_index=True)
+                
+                current_logger.debug(f"DM HandleNewCandle ({timeframe_sec}s): Appended new candle for {candle_time_pd_utc.isoformat()}. IsForming: {is_forming_candle}")
             else: 
-                self.logger.error(f"DM ({timeframe_sec}s): Unhandled action '{action}'.")
+                current_logger.error(f"DM HandleNewCandle ({timeframe_sec}s): Unhandled action '{action}'. This should not occur. Candle: {candle_time_pd_utc.isoformat()}")
                 return
 
+            # --- LOG DF BEFORE INDICATORS ---
+            if not df_for_processing.empty:
+                current_logger.debug(
+                    f"DM HandleNewCandle ({timeframe_sec}s): df_for_processing (len {len(df_for_processing)}) "
+                    f"BEFORE indicators. Last 3 'Time': {df_for_processing['Time'].tail(3).dt.strftime('%Y-%m-%dT%H:%M:%S%z').tolist()}, "
+                    f"'Close': {df_for_processing['Close'].tail(3).tolist()}"
+                )
+            else:
+                current_logger.debug(f"DM HandleNewCandle ({timeframe_sec}s): df_for_processing is EMPTY before indicators.")
+
             df_with_indicators = self._calculate_indicators(df_for_processing)
+            
+            # --- LOG DF AFTER INDICATORS ---
+            ema_col = f'EMA{self.EMA_PERIOD}'
+            sma_col = f'SMA{self.SMA_PERIOD}'
+            if not df_with_indicators.empty:
+                current_logger.debug(
+                    f"DM HandleNewCandle ({timeframe_sec}s): df_with_indicators (len {len(df_with_indicators)}) "
+                    f"AFTER indicators. Last 3 '{ema_col}': {df_with_indicators[ema_col].tail(3).tolist() if ema_col in df_with_indicators else 'N/A'}, "
+                    f"'{sma_col}': {df_with_indicators[sma_col].tail(3).tolist() if sma_col in df_with_indicators else 'N/A'}"
+                )
+            else:
+                current_logger.debug(f"DM HandleNewCandle ({timeframe_sec}s): df_with_indicators is EMPTY after indicators.")
+
             final_df_for_storage = self._ensure_df_schema(df_with_indicators)
             
             if len(final_df_for_storage) > self.MAX_CANDLES:
                 final_df_for_storage = final_df_for_storage.iloc[-self.MAX_CANDLES:].reset_index(drop=True)
             
             self.all_candles_dfs[timeframe_sec] = final_df_for_storage
-
+            
+            func_exec_end_time = time.monotonic()
+            duration_ms = (func_exec_end_time - func_exec_start_time) * 1000
+            
+            current_logger.info(
+                f"DM HandleNewCandle ({timeframe_sec}s) PROCESSED: CandleTime='{candle_time_pd_utc.strftime('%H:%M:%S') if 'candle_time_pd_utc' in locals() else 'N/A'}', "
+                f"IsForming={is_forming_candle}, Took={duration_ms:.2f}ms. DF len={len(self.all_candles_dfs.get(timeframe_sec, []))}")
+            
+            current_logger.debug(
+                f"DM HandleNewCandle ({timeframe_sec}s): DataFrame for {self.current_contract_id} updated. "
+                f"New length: {len(final_df_for_storage)}. Last candle time: "
+                f"{final_df_for_storage['Time'].iloc[-1].isoformat() if not final_df_for_storage.empty else 'N/A'}."
+            )
+            
+            # Handle external callbacks if defined (e.g., for UI updates)
+            # This part depends on how your DataManager is designed to notify subscribers
+            # Assuming you have `self.on_candle_update_callbacks` as described in your `__init__`
+            if timeframe_sec in getattr(self, 'on_candle_update_callbacks', {}) and \
+               self.on_candle_update_callbacks[timeframe_sec]:
+                
+                # Decide what data to send: the full df, the last candle, or just an update signal
+                # For now, sending the last candle if it's not a forming one (or always if forming is also needed)
+                if not is_forming_candle or True: # Send update for forming candles too if needed by UI
+                    if not final_df_for_storage.empty:
+                        # Pass a copy to prevent modification by callbacks
+                        data_to_send = final_df_for_storage.iloc[-1].copy() 
+                        for callback in self.on_candle_update_callbacks[timeframe_sec]:
+                            try:
+                                # Callback signature might be (candle_series, timeframe_sec, is_forming)
+                                callback(data_to_send, timeframe_sec, is_forming_candle) 
+                            except Exception as e_cb:
+                                current_logger.error(
+                                    f"DM HandleNewCandle: Error in external candle update callback for TF {timeframe_sec}s: {e_cb}", 
+                                    exc_info=True
+                                )
+                                
     def get_chart_data(self, timeframe_seconds: int) -> pd.DataFrame:
+        current_logger = self.logger # Assuming self.logger is set in __init__
+        df_to_return: Optional[pd.DataFrame] = None # Initialize
+
         with self.df_lock:
             df_to_return = self.all_candles_dfs.get(timeframe_seconds)
             if df_to_return is None or df_to_return.empty:
-                return self._create_empty_candles_df()
-            return self._ensure_df_schema(df_to_return.copy())
+                current_logger.debug(
+                    f"DM get_chart_data ({timeframe_seconds}s): No data or empty DataFrame found. Returning new empty DF."
+                )
+                return self._create_empty_candles_df() # Ensure it returns a DF with correct schema
 
+            # Log details of the data being returned
+            df_copy = self._ensure_df_schema(df_to_return.copy()) # Ensure schema and work with a copy
+            if not df_copy.empty:
+                last_candle_time = df_copy['Time'].iloc[-1] if 'Time' in df_copy.columns else "N/A"
+                last_candle_close = df_copy['Close'].iloc[-1] if 'Close' in df_copy.columns else "N/A"
+                ema_col = f'EMA{self.EMA_PERIOD}'
+                sma_col = f'SMA{self.SMA_PERIOD}'
+                last_ema = df_copy[ema_col].iloc[-1] if ema_col in df_copy.columns and not df_copy[ema_col].empty else "N/A"
+                last_sma = df_copy[sma_col].iloc[-1] if sma_col in df_copy.columns and not df_copy[sma_col].empty else "N/A"
+
+                current_logger.info( # Changed to INFO for easier spotting
+                    f"DM get_chart_data ({timeframe_seconds}s): Returning DF with {len(df_copy)} rows. "
+                    f"Last Candle - Time: {last_candle_time}, Close: {last_candle_close}, "
+                    f"{ema_col}: {last_ema}, {sma_col}: {last_sma}"
+                )
+            else:
+                 current_logger.info(
+                    f"DM get_chart_data ({timeframe_seconds}s): Returning EMPTY DF after schema ensure/copy."
+                )
+            return df_copy # Return the schema-ensured copy
+            
     def update_stream_token_if_needed(self):
         if self.api_client and self.data_stream and hasattr(self.data_stream, 'update_token'):
             try:
@@ -628,24 +794,136 @@ class DataManager:
         return res_df[list(self.candle_dtypes.keys())]
 
     def _calculate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
-        df_copy = df.copy() 
+        """
+        Calculates EMA and SMA indicators on the provided DataFrame with detailed logging
+        focused on diagnosing MA rendering issues. Includes timing.
+
+        Args:
+            df (pd.DataFrame): Input DataFrame with at least a 'Close' column.
+                               It's assumed 'Time' column is present for context.
+
+        Returns:
+            pd.DataFrame: DataFrame with added EMA and SMA columns. If 'Close' is missing
+                          or unsuitable, indicator columns will be filled with NaNs.
+        """
+        calc_ind_start_time = time.monotonic() # <--- TIMING START
+
+        current_logger = self.logger 
+        df_copy = df.copy() # Work on a copy to avoid modifying the original
+
         ema_col_name = f'EMA{self.EMA_PERIOD}'
         sma_col_name = f'SMA{self.SMA_PERIOD}'
+        df_length = len(df_copy)
 
-        if 'Close' not in df_copy.columns or df_copy['Close'].isnull().all():
+        current_logger.debug(
+            f"DM CalcInd: Received DataFrame with {df_length} rows. "
+            f"Targeting EMA({self.EMA_PERIOD}) and SMA({self.SMA_PERIOD})."
+        )
+
+        # 1. Validate 'Close' column existence
+        if 'Close' not in df_copy.columns:
+            current_logger.warning(
+                f"DM CalcInd: 'Close' column MISSING in input DataFrame (columns: {df_copy.columns.tolist()}). "
+                f"Cannot calculate MAs. Returning DataFrame with NaN indicators."
+            )
             df_copy[ema_col_name] = np.nan
             df_copy[sma_col_name] = np.nan
+            
+            calc_ind_end_time = time.monotonic() # <--- TIMING END (early exit)
+            calc_ind_duration_ms = (calc_ind_end_time - calc_ind_start_time) * 1000
+            current_logger.debug(
+                f"DM CalcInd: Exited early (no 'Close' col). Took={calc_ind_duration_ms:.2f}ms."
+            )
             return df_copy
         
-        close_numeric = pd.to_numeric(df_copy['Close'], errors='coerce') 
+        # 2. Convert 'Close' to numeric and check for all NaNs
+        close_numeric = pd.to_numeric(df_copy['Close'], errors='coerce')
         
-        if close_numeric.notna().sum() >= self.EMA_PERIOD:
-            df_copy[ema_col_name] = close_numeric.ewm(span=self.EMA_PERIOD, adjust=False, min_periods=self.EMA_PERIOD).mean()
-        else:
+        if close_numeric.isnull().all():
+            current_logger.warning(
+                f"DM CalcInd: 'Close' column is entirely NaN after to_numeric coercion. "
+                f"Cannot calculate MAs. Returning DataFrame with NaN indicators. Original 'Close' sample: {df_copy['Close'].head().tolist()}"
+            )
             df_copy[ema_col_name] = np.nan
-            
-        if close_numeric.notna().sum() >= self.SMA_PERIOD:
-            df_copy[sma_col_name] = close_numeric.rolling(window=self.SMA_PERIOD, min_periods=self.SMA_PERIOD).mean()
-        else:
             df_copy[sma_col_name] = np.nan
+
+            calc_ind_end_time = time.monotonic() # <--- TIMING END (early exit)
+            calc_ind_duration_ms = (calc_ind_end_time - calc_ind_start_time) * 1000
+            current_logger.debug(
+                f"DM CalcInd: Exited early ('Close' all NaN). Took={calc_ind_duration_ms:.2f}ms."
+            )
+            return df_copy
+
+        # 3. Log detailed stats of the 'Close' series being used
+        num_valid_close_prices = close_numeric.notna().sum()
+        total_close_prices = len(close_numeric)
+        
+        log_close_stats_msg = (
+            f"DM CalcInd: 'Close' series for MAs - Total: {total_close_prices}, "
+            f"Valid (non-NaN): {num_valid_close_prices}. "
+        )
+        if num_valid_close_prices > 0:
+            log_close_stats_msg += (
+                f"Min: {close_numeric.dropna().min():.2f}, Max: {close_numeric.dropna().max():.2f}, "
+                f"Mean: {close_numeric.dropna().mean():.2f}. "
+                f"First 3 valid: {close_numeric.dropna().head(3).round(2).tolist()}, "
+                f"Last 3 valid: {close_numeric.dropna().tail(3).round(2).tolist()}."
+            )
+        else:
+            log_close_stats_msg += "No valid (non-NaN) close prices found in the series."
+        current_logger.debug(log_close_stats_msg)
+
+        # 4. EMA Calculation
+        if self.EMA_PERIOD > 0:
+            if num_valid_close_prices >= self.EMA_PERIOD:
+                df_copy[ema_col_name] = close_numeric.ewm(
+                    span=self.EMA_PERIOD, 
+                    adjust=False, 
+                    min_periods=self.EMA_PERIOD # Ensures EMA starts only when enough data is present
+                ).mean()
+                
+                ema_valid_count = df_copy[ema_col_name].notna().sum()
+                current_logger.debug(
+                    f"DM CalcInd: {ema_col_name} calculated. Valid (non-NaN) EMA values: {ema_valid_count}. "
+                    f"Last 3 valid EMA: {df_copy[ema_col_name].dropna().tail(3).round(2).tolist() if ema_valid_count > 0 else 'All EMA NaN or no valid points'}"
+                )
+            else:
+                current_logger.debug(
+                    f"DM CalcInd: Not enough valid 'Close' data points ({num_valid_close_prices}) "
+                    f"for {ema_col_name} (requires {self.EMA_PERIOD}). {ema_col_name} column will be NaN."
+                )
+                df_copy[ema_col_name] = np.nan
+        else:
+            current_logger.warning(f"DM CalcInd: EMA_PERIOD is {self.EMA_PERIOD}, which is invalid. {ema_col_name} will be NaN.")
+            df_copy[ema_col_name] = np.nan
+
+        # 5. SMA Calculation
+        if self.SMA_PERIOD > 0:
+            if num_valid_close_prices >= self.SMA_PERIOD:
+                df_copy[sma_col_name] = close_numeric.rolling(
+                    window=self.SMA_PERIOD, 
+                    min_periods=self.SMA_PERIOD # Ensures SMA starts only when enough data
+                ).mean()
+
+                sma_valid_count = df_copy[sma_col_name].notna().sum()
+                current_logger.debug(
+                    f"DM CalcInd: {sma_col_name} calculated. Valid (non-NaN) SMA values: {sma_valid_count}. "
+                    f"Last 3 valid SMA: {df_copy[sma_col_name].dropna().tail(3).round(2).tolist() if sma_valid_count > 0 else 'All SMA NaN or no valid points'}"
+                )
+            else:
+                current_logger.debug(
+                    f"DM CalcInd: Not enough valid 'Close' data points ({num_valid_close_prices}) "
+                    f"for {sma_col_name} (requires {self.SMA_PERIOD}). {sma_col_name} column will be NaN."
+                )
+                df_copy[sma_col_name] = np.nan
+        else:
+            current_logger.warning(f"DM CalcInd: SMA_PERIOD is {self.SMA_PERIOD}, which is invalid. {sma_col_name} will be NaN.")
+            df_copy[sma_col_name] = np.nan
+        
+        calc_ind_end_time = time.monotonic() # <--- TIMING END
+        calc_ind_duration_ms = (calc_ind_end_time - calc_ind_start_time) * 1000
+        current_logger.debug(
+            f"DM CalcInd: EMA({self.EMA_PERIOD}), SMA({self.SMA_PERIOD}) on {df_length} rows Took={calc_ind_duration_ms:.2f}ms."
+        )
+            
         return df_copy

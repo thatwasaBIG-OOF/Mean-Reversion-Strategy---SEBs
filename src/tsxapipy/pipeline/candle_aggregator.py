@@ -1,126 +1,146 @@
-"""
-Candle aggregator module for tsxapipy.
-
-This module provides the LiveCandleAggregator class, which aggregates trade data into candles.
-"""
+# tsxapipy/pipeline/candle_aggregator.py
 
 import logging
 import threading
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta # timedelta is used by _calculate_candle_start_time indirectly via tzinfo
 from typing import Dict, Any, Callable, Optional
 
 import pandas as pd
-import numpy as np
+# import numpy as np # Not strictly needed in this version
 
-from tsxapipy.common.time_utils import UTC_TZ
+# from tsxapipy.common.time_utils import UTC_TZ # timezone.utc is sufficient for this module
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger(__name__) # Module-level logger
 
 class LiveCandleAggregator:
     """
     Aggregates trade data into candles of a specified timeframe.
-    
-    This class receives trade data and aggregates it into OHLCV candles.
+    Emits updates for both forming and finalized candles.
     """
     
-    def __init__(self, contract_id: str, timeframe_seconds: int, new_candle_data_callback: Optional[Callable] = None):
+    def __init__(self, contract_id: str, timeframe_seconds: int, 
+                 new_candle_data_callback: Optional[Callable[[pd.Series, bool, int], None]] = None):
         """
         Initialize the LiveCandleAggregator.
         
         Args:
-            contract_id: The contract ID
-            timeframe_seconds: The timeframe in seconds
-            new_candle_data_callback: Callback function for when new candle data is available
+            contract_id (str): The contract ID.
+            timeframe_seconds (int): The timeframe in seconds for candle aggregation.
+            new_candle_data_callback (Optional[Callable[[pd.Series, bool, int], None]]): 
+                Callback function invoked with:
+                - candle_data_series (pd.Series): The OHLCV data for the candle.
+                - is_forming_candle (bool): True if the candle is still forming, False if finalized.
+                - timeframe_seconds (int): The timeframe of the emitted candle.
         """
-        self.logger = logging.getLogger(__name__)
-        self.logger.info(f"LiveCandleAggregator initialized for {contract_id}, timeframe: {timeframe_seconds}s")
+        # Use a more specific logger instance including the timeframe for easier debugging if multiple aggregators run
+        self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}[{timeframe_seconds}s]")
+        self.logger.info(f"LiveCandleAggregator initialized for contract '{contract_id}', timeframe: {timeframe_seconds}s")
         
+        if not isinstance(timeframe_seconds, int) or timeframe_seconds <= 0:
+            raise ValueError("timeframe_seconds must be a positive integer.")
+        if new_candle_data_callback is not None and not callable(new_candle_data_callback):
+            raise TypeError("new_candle_data_callback must be callable or None.")
+
         self.contract_id = contract_id
         self.timeframe_seconds = timeframe_seconds
         self.new_candle_data_callback = new_candle_data_callback
         
-        # Initialize current candle
-        self.current_candle = {
-            'Time': None,
-            'Open': None,
-            'High': None,
-            'Low': None,
-            'Close': None,
-            'Volume': 0
+        self.current_candle: Dict[str, Any] = {
+            'Time': None,   # datetime object, UTC
+            'Open': None,   # float
+            'High': None,   # float
+            'Low': None,    # float
+            'Close': None,  # float
+            'Volume': 0.0   # float
         }
         
-        # Add lock for thread safety
-        self.lock = threading.RLock()
-        
-        # Add flag for tracking if candle is forming
-        self.is_forming_candle = False
-    
+        self.lock = threading.RLock() # For thread-safe access to self.current_candle
+
     def add_trade(self, trade_data: Dict[str, Any]):
         """
-        Add a trade to the aggregator.
+        Adds a trade to the aggregator. Parses timestamp, price, and volume from trade_data.
         
         Args:
-            trade_data: The trade data
+            trade_data (Dict[str, Any]): A dictionary representing the trade, expected to contain:
+                'Timestamp' (str or datetime): The trade timestamp. ISO format string (e.g., with 'Z') or datetime object.
+                'Price' (float or int): The trade price.
+                'Volume' (float or int, optional): The trade volume. Defaults to 0.0 if missing.
         """
-        # Extract timestamp from trade data
-        timestamp_str = trade_data.get('Timestamp')
-        if not timestamp_str:
-            self.logger.warning("Trade data missing timestamp")
+        self.logger.info( # Use self.logger, which is instance-specific
+            f"Aggregator ({self.timeframe_seconds}s) add_trade CALLED. Price: {trade_data.get('Price')}, Vol: {trade_data.get('Volume')}, TS: {trade_data.get('Timestamp')}"
+        )
+        
+        timestamp_input = trade_data.get('Timestamp')
+        if timestamp_input is None: # More direct check for None
+            self.logger.warning("Trade data missing 'Timestamp'. Trade ignored. Data: %s", trade_data)
+            return
+        
+        timestamp: datetime # Type hint for clarity
+        try:
+            if isinstance(timestamp_input, str):
+                # Handle 'Z' for UTC and ensure it's parsed as timezone-aware
+                if timestamp_input.endswith('Z'):
+                    # datetime.fromisoformat struggles with 'Z' in some Python versions if not explicitly handled
+                    timestamp_input = timestamp_input[:-1] + '+00:00'
+                timestamp = datetime.fromisoformat(timestamp_input)
+            elif isinstance(timestamp_input, datetime):
+                timestamp = timestamp_input
+            else:
+                self.logger.warning(f"Unexpected timestamp format: {type(timestamp_input)}. Value: '{timestamp_input}'. Trade ignored.")
+                return
+
+            # Ensure timestamp is UTC aware and explicitly set to UTC
+            if timestamp.tzinfo is None:
+                timestamp = timestamp.replace(tzinfo=timezone.utc) # Assume UTC if naive
+            elif timestamp.tzinfo.utcoffset(timestamp) != timedelta(0): # If tz-aware but not UTC
+                timestamp = timestamp.astimezone(timezone.utc)
+        
+        except Exception as e:
+            self.logger.error(f"Error parsing timestamp '{timestamp_input}': {e}. Trade data: {trade_data}. Trade ignored.", exc_info=True)
+            return
+        
+        price_input = trade_data.get('Price')
+        volume_input = trade_data.get('Volume', 0.0) # Default volume to 0.0 if missing
+
+        if price_input is None:
+            self.logger.warning("Trade data missing 'Price'. Trade ignored. Data: %s", trade_data)
             return
         
         try:
-            # Parse timestamp
-            if isinstance(timestamp_str, str):
-                timestamp = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
-            elif isinstance(timestamp_str, datetime):
-                timestamp = timestamp_str
-            else:
-                self.logger.warning(f"Unexpected timestamp format: {type(timestamp_str)}")
-                return
-        except Exception as e:
-            self.logger.error(f"Error parsing timestamp: {e}")
+            price = float(price_input)
+            size = float(volume_input)
+            if size < 0:
+                self.logger.warning(f"Received negative trade volume ({size}) for price {price}. Using 0.0 volume.")
+                size = 0.0
+        except (ValueError, TypeError) as e:
+            self.logger.error(f"Error converting price/volume to float. Price: '{price_input}', Volume: '{volume_input}'. Error: {e}. Trade ignored.", exc_info=True)
             return
         
-        # Extract price and size from trade data
-        price = trade_data.get('Price')
-        size = trade_data.get('Volume', 0)
-        
-        if price is None:
-            self.logger.warning("Trade data missing price")
-            return
-        
-        # Update current candle with thread safety
         with self.lock:
             self._update_candle(timestamp, price, size)
     
-    def process_trade(self, trade_data: Dict[str, Any]):
+    def _update_candle(self, timestamp: datetime, price: float, size: float):
         """
-        Process a trade from the data stream.
-        
+        Updates the current candle with new trade data.
+        If a new candle period starts, the old candle is finalized and emitted.
+        The forming candle is also emitted after each update.
+
         Args:
-            trade_data: The trade data
+            timestamp (datetime): UTC datetime of the trade.
+            price (float): Trade price.
+            size (float): Trade volume.
         """
-        self.add_trade(trade_data)
-    
-    def _update_candle(self, timestamp: datetime, price: float, size: float = 0):
-        """
-        Update the current candle with new data.
-        
-        Args:
-            timestamp: The timestamp of the data
-            price: The price
-            size: The size (volume)
-        """
-        # Calculate candle start time
         candle_start_time = self._calculate_candle_start_time(timestamp)
         
-        # If this is a new candle
-        if self.current_candle['Time'] is None or candle_start_time != self.current_candle['Time']:
-            # If we have a previous candle, finalize it and notify callback
-            if self.current_candle['Time'] is not None:
-                self._finalize_current_candle()
+        if self.current_candle.get('Time') is None or candle_start_time != self.current_candle['Time']:
+            # A. New candle period has begun OR this is the very first trade.
+
+            # A.1. Finalize and emit the *previous* candle if it existed and had data.
+            if self.current_candle.get('Time') is not None and self.current_candle.get('Open') is not None:
+                self.logger.debug(f"Finalizing previous candle at {self.current_candle['Time'].isoformat()}.")
+                self._emit_candle_data(is_forming_candle=False) # Previous candle is now finalized
             
-            # Start a new candle
+            # A.2. Start a new candle with the current trade's data.
             self.current_candle = {
                 'Time': candle_start_time,
                 'Open': price,
@@ -129,48 +149,91 @@ class LiveCandleAggregator:
                 'Close': price,
                 'Volume': size
             }
-            self.is_forming_candle = True
+            self.logger.debug(f"New candle started. Time: {candle_start_time.isoformat()}, O: {price:.2f}, H: {price:.2f}, L: {price:.2f}, C: {price:.2f}, V: {size:.2f}")
+        
         else:
-            # Update existing candle
-            self.current_candle['High'] = max(self.current_candle['High'], price)
-            self.current_candle['Low'] = min(self.current_candle['Low'], price)
+            # B. This trade belongs to the existing `current_candle` (which is forming).
+            # Ensure Open is set if it was somehow missed (should be set on candle start)
+            if self.current_candle.get('Open') is None:
+                self.current_candle['Open'] = price
+                self.logger.warning(f"Current candle Open was None, setting to current price: {price}")
+
+            self.current_candle['High'] = max(self.current_candle.get('High', price), price) # Handles if High was None
+            self.current_candle['Low'] = min(self.current_candle.get('Low', price), price)   # Handles if Low was None
             self.current_candle['Close'] = price
-            self.current_candle['Volume'] += size
-    
+            self.current_candle['Volume'] = self.current_candle.get('Volume', 0.0) + size
+            self.logger.debug(
+                f"Forming candle updated. Time: {self.current_candle['Time'].isoformat()}, "
+                f"H: {self.current_candle['High']:.2f}, L: {self.current_candle['Low']:.2f}, "
+                f"C: {self.current_candle['Close']:.2f}, V: {self.current_candle['Volume']:.2f}"
+            )
+
+        # C. Emit data for the current candle (which is forming, or was just started and is thus forming).
+        # Ensure the candle has valid data before emitting.
+        if self.current_candle.get('Time') is not None and self.current_candle.get('Open') is not None:
+            self._emit_candle_data(is_forming_candle=True) 
+        else:
+            self.logger.warning(f"Attempted to emit candle data, but current_candle Time or Open is None. Current candle: {self.current_candle}")
+
+
     def _calculate_candle_start_time(self, timestamp: datetime) -> datetime:
         """
-        Calculate the start time of the candle containing the given timestamp.
-        
+        Calculates the floored start time of the candle for a given UTC timestamp.
+
         Args:
-            timestamp: The timestamp
-        
+            timestamp (datetime): The UTC timestamp of a trade.
+
         Returns:
-            datetime: The candle start time
+            datetime: The UTC start time of the candle period this trade belongs to.
         """
-        # Ensure timestamp is timezone-aware
-        if timestamp.tzinfo is None:
-            timestamp = timestamp.replace(tzinfo=timezone.utc)
-        
-        # Calculate seconds since epoch
+        # Timestamp is assumed to be UTC-aware from add_trade
+        if timestamp.tzinfo is None or timestamp.tzinfo.utcoffset(timestamp) != timedelta(0):
+            self.logger.warning(f"Timestamp '{timestamp}' was not UTC in _calculate_candle_start_time. Converting. This is unexpected.")
+            timestamp = timestamp.astimezone(timezone.utc)
+            
+        # Calculate total seconds since the Unix epoch for the given timestamp
         epoch_seconds = int(timestamp.timestamp())
         
-        # Calculate candle start time
-        candle_start_seconds = epoch_seconds - (epoch_seconds % self.timeframe_seconds)
-        candle_start_time = datetime.fromtimestamp(candle_start_seconds, tz=timezone.utc)
+        # Floor to the nearest interval boundary
+        candle_start_epoch_seconds = epoch_seconds - (epoch_seconds % self.timeframe_seconds)
         
-        return candle_start_time
-    
-    def _finalize_current_candle(self):
-        """Finalize the current candle and notify callback."""
-        if self.new_candle_data_callback:
+        # Convert back to a datetime object, ensuring it's UTC
+        candle_start_time_utc = datetime.fromtimestamp(candle_start_epoch_seconds, tz=timezone.utc)
+        
+        return candle_start_time_utc
+
+    def _emit_candle_data(self, is_forming_candle: bool):
+        """
+        Emits the current candle data via the callback.
+        Also logs the emitted data for debugging purposes.
+
+        Args:
+            is_forming_candle (bool): True if the candle being emitted is still forming,
+                                      False if it's considered finalized.
+        """
+        if self.new_candle_data_callback and self.current_candle.get('Time') is not None:
+            candle_to_emit = self.current_candle.copy() 
+
+            for key in ['Open', 'High', 'Low', 'Close']:
+                if candle_to_emit.get(key) is None:
+                    self.logger.error(f"CRITICAL: Candle field '{key}' is None before emission. Candle: {candle_to_emit}")
+                    return 
+            
             try:
-                # Convert candle to pandas Series for consistency
-                candle_series = pd.Series(self.current_candle)
+                candle_series_to_emit = pd.Series(candle_to_emit)
                 
-                # Call the callback with the candle data and forming flag
-                self.new_candle_data_callback(candle_series)
+                # Logging at INFO level for crucial emission events.
+                self.logger.info(
+                    f"Aggregator ({self.timeframe_seconds}s): Emitting candle -> Time: {candle_series_to_emit['Time'].isoformat()}, "
+                    f"O: {candle_series_to_emit['Open']:.2f}, H: {candle_series_to_emit['High']:.2f}, "
+                    f"L: {candle_series_to_emit['Low']:.2f}, C: {candle_series_to_emit['Close']:.2f}, "
+                    f"V: {candle_series_to_emit['Volume']:.2f}, IsForming: {is_forming_candle}"
+                )
                 
-                # Reset forming flag
-                self.is_forming_candle = False
+                self.new_candle_data_callback(candle_series_to_emit, is_forming_candle, self.timeframe_seconds)
             except Exception as e:
-                self.logger.error(f"Error in new candle data callback: {e}")
+                self.logger.error(f"Error in new_candle_data_callback: {e}", exc_info=True)
+        elif not self.new_candle_data_callback:
+            self.logger.warning("new_candle_data_callback is None. Cannot emit candle data.")
+        elif self.current_candle.get('Time') is None:
+            self.logger.warning("Cannot emit candle data: current_candle['Time'] is None.")
