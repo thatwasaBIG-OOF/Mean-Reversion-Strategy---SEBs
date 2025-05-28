@@ -7,6 +7,7 @@ from datetime import datetime, time, timedelta
 from typing import Dict, List, Callable, Optional, Any, Union, Tuple
 import threading # Ensure threading is imported if df_lock is used
 import time
+import inspect
 
 # Import from tsxapipy package
 from tsxapipy.common.time_utils import UTC_TZ
@@ -127,15 +128,22 @@ class DataManager:
         # in your version. If DataStream needs to call methods on this DataManager instance,
         # they should be actual methods like self._on_quote_received, not attributes that are None.
 
-    # --- START OF DEFINING MISSING CALLBACK HANDLERS ---
     def _on_quote_received(self, quote_data: Dict[str, Any]):
-        """Handles raw quote updates from DataStream passed via on_quote_callback."""
-        # self.logger.debug(f"DM Raw Quote for {self.current_contract_id}: {quote_data.get('bp')}/{quote_data.get('ap')}")
-        # If external callbacks are registered with DataManager for quotes:
-        # for callback in self.on_quote_update_callbacks: # Assuming self.on_quote_update_callbacks is defined
-        #     try: callback(quote_data)
-        #     except Exception as e: self.logger.error(f"Error in DM quote update callback: {e}")
-        pass # Current placeholder
+        self.logger.debug(
+            f"DM _on_quote_received for {self.current_contract_id}: "
+            f"LP={quote_data.get('lastPrice')}, V={quote_data.get('volume')}, "
+            f"TS(Orig)={quote_data.get('timestamp')}"
+    )
+        
+    # No synthetic trade generation for this test
+    pass
+
+    def _on_depth_received(self, depth_data: Any): # Using Any for now
+        self.logger.debug(f"DM _on_depth_received: Received depth data for {self.current_contract_id}. Type: {type(depth_data)}")
+        if isinstance(depth_data, list) and depth_data:
+            self.logger.info(f"DM _on_depth_received: First depth level: {depth_data[0]}")
+        # Actual processing would go here
+        pass
 
     def _on_stream_error(self, error: Any):
         """Handles errors reported by the DataStream instance passed via on_error_callback."""
@@ -161,7 +169,6 @@ class DataManager:
         # for callback in self.on_stream_state_change_callbacks:
         #     try: callback(state_name)
         #     except Exception as e: self.logger.error(f"Error in DM stream state change callback: {e}")
-    # --- END OF DEFINING MISSING CALLBACK HANDLERS ---
 
     def initialize_components(self, contract_id: str, account_id_for_data: Optional[int] = None) -> bool: # Added account_id_for_data
         """Initializes API client, data stream, and candle aggregators for all supported timeframes."""
@@ -214,7 +221,8 @@ class DataManager:
                     timeframe_seconds=tf_sec, # Pass correct arg name
                     new_candle_data_callback=self._handle_new_candle_data_from_aggregator # Correct callback
                 )
-                self.logger.info(f"LiveCandleAggregator for {tf_sec}s initialized.")
+            
+            self.logger.info(f"LiveCandleAggregator for {tf_sec}s initialized.")
             
             # Initialize data stream with corrected callback names
             self.data_stream = DataStream(
@@ -222,10 +230,13 @@ class DataManager:
                 contract_id_to_subscribe=contract_id, # Match DataStream's __init__
                 on_quote_callback=self._on_quote_received,    # Now defined
                 on_trade_callback=self._pass_trade_to_aggregators, # Correct method for trades
+                on_depth_callback=self._on_depth_received,  
                 on_error_callback=self._on_stream_error,      # Now defined
-                on_state_change_callback=self._on_stream_state_change # Now defined
+                on_state_change_callback=self._on_stream_state_change, # Now defined
+                auto_subscribe_quotes=True,  
+                auto_subscribe_trades=True, 
+                auto_subscribe_depth=False     
             )
-            self.logger.info("DataStream configured.")
             
             self.last_stream_status = StreamConnectionState.NOT_INITIALIZED.name # Reset before DataStream start
             return True
@@ -266,7 +277,6 @@ class DataManager:
         #     try: callback(trade_data)
         #     except Exception as e: self.logger.error(f"Error in DM trade update callback: {e}")
 
-
     def start_streaming(self) -> bool:
         """Starts the DataStream if it's initialized."""
         if not self.data_stream:
@@ -285,6 +295,7 @@ class DataManager:
             return True 
 
         self.logger.info("DM StartStream: Attempting to start DataStream...")
+        
         if self.data_stream.start(): # DataStream.start() now returns bool
             self.logger.info("DM StartStream: DataStream start method called successfully (connection is async).")
             # Actual state (CONNECTING, CONNECTED, ERROR) will be set by _on_stream_state_change callback
@@ -444,39 +455,15 @@ class DataManager:
         Updates the corresponding DataFrame, calculates indicators, and manages data integrity.
         Includes detailed logging for debugging MA issues.
         """
-        self.logger.info(
-            f"DM _handle_new_candle_data CALLED ({timeframe_sec}s): "
-            f"Time='{candle_data_series.get('Time')}', "
-            f"C={candle_data_series.get('Close')}, V={candle_data_series.get('Volume')}, "
-            f"IsForming={is_forming_candle}"
-        )
-
         func_exec_start_time = time.monotonic()
 
-        current_logger = self.logger 
-
-        current_logger.logger.info(
-            f"DM _handle_new_candle_data CALLED ({timeframe_sec}s): "
-            f"Time='{candle_data_series.get('Time')}', "
-            f"C={candle_data_series.get('Close')}, V={candle_data_series.get('Volume')}, "
-            f"IsForming={is_forming_candle}"
-        )
-
-        # --- LOG INPUT ---
         if not isinstance(candle_data_series, pd.Series) or candle_data_series.empty:
-            current_logger.warning(f"DM HandleNewCandle ({timeframe_sec}s): Received invalid or empty candle_data_series. Skipping.")
+            self.logger.warning(f"DM HandleNewCandle ({timeframe_sec}s): Received invalid or empty candle_data_series. Skipping.")
             return
-
-        current_logger.debug(
-            f"DM HandleNewCandle ({timeframe_sec}s) INPUT: Time='{candle_data_series.get('Time')}', "
-            f"O={candle_data_series.get('Open')}, H={candle_data_series.get('High')}, "
-            f"L={candle_data_series.get('Low')}, C={candle_data_series.get('Close')}, "
-            f"V={candle_data_series.get('Volume')}, IsForming={is_forming_candle}"
-        )
 
         required_keys = ['Time', 'Open', 'High', 'Low', 'Close', 'Volume']
         if not all(key in candle_data_series.index for key in required_keys):
-            current_logger.warning(
+            self.logger.warning(
                 f"DM HandleNewCandle ({timeframe_sec}s): Candle series missing required keys "
                 f"(need {required_keys}). Got: {list(candle_data_series.index)}. Data: {candle_data_series.to_dict()}. Skipping."
             )
@@ -489,10 +476,10 @@ class DataManager:
 
             if isinstance(candle_time_input, datetime):
                 if candle_time_input.tzinfo is None: 
-                    current_logger.debug(f"DM HandleNewCandle ({timeframe_sec}s): Localizing naive datetime '{candle_time_input}' to UTC.")
+                    self.logger.debug(f"DM HandleNewCandle ({timeframe_sec}s): Localizing naive datetime '{candle_time_input}' to UTC.")
                     candle_time_pd_utc = pd.Timestamp(candle_time_input, tz='UTC')
                 elif str(candle_time_input.tzinfo).upper() != 'UTC': 
-                    current_logger.debug(f"DM HandleNewCandle ({timeframe_sec}s): Converting non-UTC datetime '{candle_time_input}' to UTC.")
+                    self.logger.debug(f"DM HandleNewCandle ({timeframe_sec}s): Converting non-UTC datetime '{candle_time_input}' to UTC.")
                     candle_time_pd_utc = pd.Timestamp(candle_time_input).tz_convert('UTC')
                 else: 
                     candle_time_pd_utc = pd.Timestamp(candle_time_input) 
@@ -504,13 +491,13 @@ class DataManager:
                 else: 
                     candle_time_pd_utc = candle_time_input
             else: 
-                current_logger.debug(f"DM HandleNewCandle ({timeframe_sec}s): Parsing timestamp string '{candle_time_input}' as UTC.")
+                self.logger.debug(f"DM HandleNewCandle ({timeframe_sec}s): Parsing timestamp string '{candle_time_input}' as UTC.")
                 candle_time_pd_utc = pd.Timestamp(str(candle_time_input), tz='UTC')
 
             if pd.isna(candle_time_pd_utc): 
                 raise ValueError(f"Timestamp '{candle_data_series.get('Time')}' became NaT after processing.")
         except Exception as e_ts:
-            current_logger.error(f"DM HandleNewCandle ({timeframe_sec}s): Invalid 'Time' in candle series: {e_ts}. Skipping candle."); return
+            self.logger.error(f"DM HandleNewCandle ({timeframe_sec}s): Invalid 'Time' in candle series: {e_ts}. Skipping candle."); return
 
         # --- OHLCV Processing: Ensure numeric and valid relationships ---
         new_row_data_ohlcv = {}
@@ -519,20 +506,20 @@ class DataManager:
             try: 
                 val = float(candle_data_series[key])
                 if val < 0 and key != 'Volume': 
-                    current_logger.warning(f"DM HandleNewCandle ({timeframe_sec}s): Negative {key} ('{val}'). Using abs.")
+                    self.logger.warning(f"DM HandleNewCandle ({timeframe_sec}s): Negative {key} ('{val}'). Using abs.")
                     val = abs(val)
                 elif val < 0 and key == 'Volume':
-                    current_logger.warning(f"DM HandleNewCandle ({timeframe_sec}s): Negative volume ('{val}'). Setting to 0.")
+                    self.logger.warning(f"DM HandleNewCandle ({timeframe_sec}s): Negative volume ('{val}'). Setting to 0.")
                     val = 0.0
                 new_row_data_ohlcv[key] = val
             except (ValueError, TypeError, KeyError): 
-                current_logger.error(f"DM HandleNewCandle ({timeframe_sec}s): Invalid/missing value for {key} ('{candle_data_series.get(key)}'). Skipping candle.")
+                self.logger.error(f"DM HandleNewCandle ({timeframe_sec}s): Invalid/missing value for {key} ('{candle_data_series.get(key)}'). Skipping candle.")
                 conversion_successful = False
                 break
         if not conversion_successful: return
         
         if new_row_data_ohlcv['High'] < new_row_data_ohlcv['Low']:
-            current_logger.warning(
+            self.logger.warning(
                 f"DM HandleNewCandle ({timeframe_sec}s): High < Low ({new_row_data_ohlcv['High']} < {new_row_data_ohlcv['Low']}) "
                 f"for candle {candle_time_pd_utc.isoformat()}. Swapping."
             )
@@ -544,7 +531,7 @@ class DataManager:
         with self.df_lock:
             current_df = self.all_candles_dfs.get(timeframe_sec)
             if current_df is None: 
-                current_logger.error(f"DM HandleNewCandle ({timeframe_sec}s): DataFrame was None, this should not happen. Re-initializing.")
+                self.logger.error(f"DM HandleNewCandle ({timeframe_sec}s): DataFrame was None, this should not happen. Re-initializing.")
                 current_df = self._create_empty_candles_df()
                 self.all_candles_dfs[timeframe_sec] = current_df
 
@@ -563,14 +550,14 @@ class DataManager:
                 elif candle_time_pd_utc > last_df_time_utc:
                     action = "append"
                 else: 
-                    current_logger.warning(
+                    self.logger.warning(
                         f"DM HandleNewCandle ({timeframe_sec}s): Received out-of-order candle data "
                         f"(New: {candle_time_pd_utc.isoformat()}, Last in DF: {last_df_time_utc.isoformat()}). Ignoring this candle."
                     )
                     return 
             else: 
                 action = "append_to_empty"
-                current_logger.debug(
+                self.logger.debug(
                     f"DM HandleNewCandle ({timeframe_sec}s): DataFrame is empty or has no valid last timestamp. "
                     f"Appending new candle: {candle_time_pd_utc.isoformat()}"
                 )
@@ -588,7 +575,7 @@ class DataManager:
                 current_df.loc[last_idx, 'Close'] = new_row_data_ohlcv['Close']
                 current_df.loc[last_idx, 'Volume'] = (current_df.loc[last_idx, 'Volume'] if pd.notna(current_df.loc[last_idx, 'Volume']) else 0) + new_row_data_ohlcv['Volume']
                 df_for_processing = current_df
-                current_logger.debug(f"DM HandleNewCandle ({timeframe_sec}s): Updated forming candle for {candle_time_pd_utc.isoformat()}")
+                self.logger.debug(f"DM HandleNewCandle ({timeframe_sec}s): Updated forming candle for {candle_time_pd_utc.isoformat()}")
             
             elif action == "append" or action == "append_to_empty":
                 new_row_dict = {'Time': candle_time_pd_utc, **new_row_data_ohlcv}
@@ -605,20 +592,20 @@ class DataManager:
                     current_df_schema_checked = self._ensure_df_schema(current_df.copy())
                     df_for_processing = pd.concat([current_df_schema_checked, temp_df_for_concat], ignore_index=True)
                 
-                current_logger.debug(f"DM HandleNewCandle ({timeframe_sec}s): Appended new candle for {candle_time_pd_utc.isoformat()}. IsForming: {is_forming_candle}")
+                self.logger.debug(f"DM HandleNewCandle ({timeframe_sec}s): Appended new candle for {candle_time_pd_utc.isoformat()}. IsForming: {is_forming_candle}")
             else: 
-                current_logger.error(f"DM HandleNewCandle ({timeframe_sec}s): Unhandled action '{action}'. This should not occur. Candle: {candle_time_pd_utc.isoformat()}")
+                self.logger.error(f"DM HandleNewCandle ({timeframe_sec}s): Unhandled action '{action}'. This should not occur. Candle: {candle_time_pd_utc.isoformat()}")
                 return
 
             # --- LOG DF BEFORE INDICATORS ---
             if not df_for_processing.empty:
-                current_logger.debug(
+                self.logger.debug(
                     f"DM HandleNewCandle ({timeframe_sec}s): df_for_processing (len {len(df_for_processing)}) "
                     f"BEFORE indicators. Last 3 'Time': {df_for_processing['Time'].tail(3).dt.strftime('%Y-%m-%dT%H:%M:%S%z').tolist()}, "
                     f"'Close': {df_for_processing['Close'].tail(3).tolist()}"
                 )
             else:
-                current_logger.debug(f"DM HandleNewCandle ({timeframe_sec}s): df_for_processing is EMPTY before indicators.")
+                self.logger.debug(f"DM HandleNewCandle ({timeframe_sec}s): df_for_processing is EMPTY before indicators.")
 
             df_with_indicators = self._calculate_indicators(df_for_processing)
             
@@ -626,13 +613,13 @@ class DataManager:
             ema_col = f'EMA{self.EMA_PERIOD}'
             sma_col = f'SMA{self.SMA_PERIOD}'
             if not df_with_indicators.empty:
-                current_logger.debug(
+                self.logger.debug(
                     f"DM HandleNewCandle ({timeframe_sec}s): df_with_indicators (len {len(df_with_indicators)}) "
                     f"AFTER indicators. Last 3 '{ema_col}': {df_with_indicators[ema_col].tail(3).tolist() if ema_col in df_with_indicators else 'N/A'}, "
                     f"'{sma_col}': {df_with_indicators[sma_col].tail(3).tolist() if sma_col in df_with_indicators else 'N/A'}"
                 )
             else:
-                current_logger.debug(f"DM HandleNewCandle ({timeframe_sec}s): df_with_indicators is EMPTY after indicators.")
+                self.logger.debug(f"DM HandleNewCandle ({timeframe_sec}s): df_with_indicators is EMPTY after indicators.")
 
             final_df_for_storage = self._ensure_df_schema(df_with_indicators)
             
@@ -644,11 +631,11 @@ class DataManager:
             func_exec_end_time = time.monotonic()
             duration_ms = (func_exec_end_time - func_exec_start_time) * 1000
             
-            current_logger.info(
+            self.logger.info(
                 f"DM HandleNewCandle ({timeframe_sec}s) PROCESSED: CandleTime='{candle_time_pd_utc.strftime('%H:%M:%S') if 'candle_time_pd_utc' in locals() else 'N/A'}', "
                 f"IsForming={is_forming_candle}, Took={duration_ms:.2f}ms. DF len={len(self.all_candles_dfs.get(timeframe_sec, []))}")
             
-            current_logger.debug(
+            self.logger.debug(
                 f"DM HandleNewCandle ({timeframe_sec}s): DataFrame for {self.current_contract_id} updated. "
                 f"New length: {len(final_df_for_storage)}. Last candle time: "
                 f"{final_df_for_storage['Time'].iloc[-1].isoformat() if not final_df_for_storage.empty else 'N/A'}."
@@ -671,7 +658,7 @@ class DataManager:
                                 # Callback signature might be (candle_series, timeframe_sec, is_forming)
                                 callback(data_to_send, timeframe_sec, is_forming_candle) 
                             except Exception as e_cb:
-                                current_logger.error(
+                                self.logger.error(
                                     f"DM HandleNewCandle: Error in external candle update callback for TF {timeframe_sec}s: {e_cb}", 
                                     exc_info=True
                                 )
@@ -927,3 +914,5 @@ class DataManager:
         )
             
         return df_copy
+    
+    

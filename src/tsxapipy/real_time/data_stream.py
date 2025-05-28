@@ -10,8 +10,12 @@ from signalrcore.hub_connection_builder import HubConnectionBuilder
 from tsxapipy.config import MARKET_HUB_URL
 from tsxapipy.api import APIClient 
 from .stream_state import StreamConnectionState
+from signalrcore.messages.completion_message import CompletionMessage
+import uuid
 
 logger = logging.getLogger(__name__)
+
+logger.critical("!!! LOADING DataStream class definition from data_stream.py - VERSION CHECK: HAS START METHOD !!!")
 
 # Callback type aliases
 # The DataStream user will provide callbacks that expect the actual data payload (e.g., Dict for quote)
@@ -38,11 +42,12 @@ class DataStream:
         on_depth_callback: Optional[DepthCallback] = None,
         on_error_callback: Optional[StreamErrorCallback] = None,
         on_state_change_callback: Optional[StreamStateChangeCallback] = None,
-        auto_subscribe_quotes: bool = True,
-        auto_subscribe_trades: bool = True,
-        auto_subscribe_depth: bool = False # Defaulting to False as it can be verbose
+        auto_subscribe_quotes: bool = False,
+        auto_subscribe_trades: bool = False,
+        auto_subscribe_depth: bool = True # Defaulting to False as it can be verbose
     ):
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}[{contract_id_to_subscribe}]") # Instance specific logger
+        
         self.api_client = api_client
         self.contract_id_subscribed: str = contract_id_to_subscribe 
         
@@ -51,6 +56,7 @@ class DataStream:
             "trade": on_trade_callback,
             "depth": on_depth_callback,
         }
+        
         self.on_error_callback = on_error_callback
         self.on_state_change_callback = on_state_change_callback
 
@@ -172,15 +178,62 @@ class DataStream:
              self._set_connection_state(StreamConnectionState.DISCONNECTED, "Connection stopped by client")
 
     def _on_signalr_error(self, error_payload: Any):
-        error_message = str(error_payload) if error_payload else "Unknown SignalR transport error"
-        self.logger.error(f"DataStream (Contract: {self.contract_id_subscribed}): Underlying SignalR connection error: {error_message}", exc_info=isinstance(error_payload, Exception))
-        self._set_connection_state(StreamConnectionState.ERROR, f"SignalR transport error: {error_message[:100]}")
+        """
+        Callback for fundamental SignalR connection errors or server-initiated error completions.
+        Logs detailed information from CompletionMessage objects.
+        """
+        # Default error message string, will be updated if more specific info is found
+        error_message_for_log_and_state = str(error_payload) if error_payload else "Unknown SignalR error"
+        log_as_exception = isinstance(error_payload, Exception) # Should we log with exc_info?
+
+        if isinstance(error_payload, CompletionMessage):
+            invocation_id_str = getattr(error_payload, 'invocation_id', 'N/A')
+            # Check if it's an error completion (type 3 usually, but better to check error attribute)
+            if error_payload.error is not None:
+                server_error_details = error_payload.error
+                self.logger.error(
+                    f"DataStream ({self.contract_id_subscribed}): SignalR CompletionMessage ERROR! "
+                    f"Invocation ID: {invocation_id_str}, "
+                    f"Server Error: '{server_error_details}', " # Specific server error string
+                    f"Result (should be None if error): {getattr(error_payload, 'result', 'N/A')}"
+                )
+                error_message_for_log_and_state = f"HubInvocationError (ID: {invocation_id_str}): {server_error_details}"
+                # Don't log this as an exception with traceback if it's a 'handled' server error string in CompletionMessage
+                log_as_exception = False
+            else:
+                # This is a CompletionMessage but without an error string.
+                # It could be a successful completion of a void method, or a non-error completion
+                # that signalrcore still routes through its error handling for some reason.
+                self.logger.info(
+                    f"DataStream ({self.contract_id_subscribed}): SignalR CompletionMessage (no explicit error string found in .error attribute). "
+                    f"Invocation ID: {invocation_id_str}, "
+                    f"Result: {getattr(error_payload, 'result', 'N/A')}, Type: {error_payload.type}. "
+                    f"Full object: {error_payload}" # Log the full object for inspection
+                )
+                # For state reason, use a generic message if it's not a Python exception
+                if not log_as_exception: # If error_payload is not an Exception itself
+                     error_message_for_log_and_state = (f"CompletionMessage (type {error_payload.type}) without explicit "
+                                                        f"error string. InvId: {invocation_id_str}")
+        else:
+            # Not a CompletionMessage, treat as a general transport error or other SignalR client error
+            self.logger.error(
+                f"DataStream ({self.contract_id_subscribed}): Underlying SignalR transport error or unhandled message type: {error_message_for_log_and_state}",
+                exc_info=log_as_exception # Log traceback if it's a Python exception object
+            )
+
+        # Set state to ERROR and invoke user's error callback
+        # Truncate the reason string if it's too long for a state reason
+        self._set_connection_state(StreamConnectionState.ERROR, error_message_for_log_and_state[:150])
+
         if self.on_error_callback:
             try:
-                self.on_error_callback(error_payload) 
+                self.on_error_callback(error_payload) # Pass the original error payload
             except Exception as e_cb:
-                self.logger.error(f"DataStream (Contract: {self.contract_id_subscribed}): Error in on_error_callback: {e_cb}", exc_info=True)
-
+                self.logger.error(
+                    f"DataStream ({self.contract_id_subscribed}): Error in user's on_error_callback: {e_cb}",
+                    exc_info=True
+                )
+                
     # --- MODIFIED Message Handlers to accept List[Any] from signalrcore ---
     def _handle_quote_message(self, message_args: List[Any]):
         self.logger.debug(f"DataStream ({self.contract_id_subscribed}): _handle_quote_message raw args: {message_args}")
@@ -207,28 +260,53 @@ class DataStream:
     def _handle_trade_message(self, message_args: List[Any]):
         self.logger.debug(f"DataStream ({self.contract_id_subscribed}): _handle_trade_message raw args: {message_args}")
         if not isinstance(message_args, list) or len(message_args) < 2:
-            self.logger.warning(f"DataStream (Contract: {self.contract_id_subscribed}): GatewayTrade unexpected message_args format: {message_args}")
+            self.logger.warning(f"DataStream (Contract: {self.contract_id_subscribed}): GatewayTrade unexpected message_args format (initial check): {message_args}")
             return
 
         contract_id_from_event = message_args[0]
-        trade_payload = message_args[1]
+        trade_data_payload = message_args[1] # This is the part that's sometimes a list
 
-        if not isinstance(trade_payload, dict) or not isinstance(contract_id_from_event, str):
-            self.logger.warning(f"DataStream (Contract: {self.contract_id_subscribed}): GatewayTrade - Invalid types. ContractID: {type(contract_id_from_event)}, Payload: {type(trade_payload)}")
+        if not isinstance(contract_id_from_event, str):
+            self.logger.warning(f"DataStream (Contract: {self.contract_id_subscribed}): GatewayTrade - Invalid type for ContractID: {type(contract_id_from_event)}")
             return
         
-        # This INFO log was requested specifically for debugging the data flow
-        self.logger.info(f"DataStream ({self.contract_id_subscribed}): _handle_trade_message RECEIVED PROCESSED PAYLOAD: {trade_payload}") 
+        # Check if the callback for trades is even set
+        if not self._callbacks["trade"]:
+            self.logger.debug(f"DataStream (Contract: {self.contract_id_subscribed}): No trade callback registered. Ignoring GatewayTrade message.")
+            return
 
-        if contract_id_from_event == self.contract_id_subscribed and self._callbacks["trade"]:
-            try: 
-                self.logger.debug(f"DataStream ({self.contract_id_subscribed}): Invoking on_trade_callback with: {trade_payload}")
-                self._callbacks["trade"](trade_payload)
-            except Exception as e: 
-                self.logger.error(f"DataStream (Contract: {self.contract_id_subscribed}): Error in on_trade_callback: {e}", exc_info=True)
-        elif contract_id_from_event != self.contract_id_subscribed:
-             self.logger.warning(f"DataStream: Received trade for mismatched contract_id: {contract_id_from_event} (expected {self.contract_id_subscribed})")
+        # Check if the payload is a list (most common case from logs)
+        if isinstance(trade_data_payload, list):
+            self.logger.debug(f"DataStream (Contract: {self.contract_id_subscribed}): GatewayTrade payload is a list. Iterating. Count: {len(trade_data_payload)}")
+            for single_trade_dict in trade_data_payload:
+                if not isinstance(single_trade_dict, dict):
+                    self.logger.warning(f"DataStream (Contract: {self.contract_id_subscribed}): GatewayTrade - Item in trade list is not a dict: {type(single_trade_dict)}. Item: {single_trade_dict}")
+                    continue 
 
+                self.logger.info(f"DataStream ({self.contract_id_subscribed}): _handle_trade_message PROCESSING TRADE (from list): {single_trade_dict}")
+                try: 
+                    self._callbacks["trade"](single_trade_dict)
+                except Exception as e: 
+                    self.logger.error(f"DataStream (Contract: {self.contract_id_subscribed}): Error in on_trade_callback for trade {single_trade_dict}: {e}", exc_info=True)
+        
+        # Fallback: What if the payload is a single dictionary directly? (Less likely based on logs, but defensive)
+        elif isinstance(trade_data_payload, dict):
+            self.logger.info(f"DataStream ({self.contract_id_subscribed}): GatewayTrade payload is a single dict. PROCESSING TRADE (direct dict): {trade_data_payload}")
+            try:
+                self._callbacks["trade"](trade_data_payload)
+            except Exception as e:
+                self.logger.error(f"DataStream (Contract: {self.contract_id_subscribed}): Error in on_trade_callback for single trade dict {trade_data_payload}: {e}", exc_info=True)
+        
+        else: # Payload is neither a list nor a dict
+            self.logger.warning(f"DataStream (Contract: {self.contract_id_subscribed}): GatewayTrade - Expected payload (message_args[1]) to be a list or dict of trades, got: {type(trade_data_payload)}. Data: {trade_data_payload}")
+            return
+
+        # No separate check for contract_id_from_event == self.contract_id_subscribed here
+        # because the handler is registered only for the target "GatewayTrade".
+        # If the server sends events for other contracts on this target, it's unexpected.
+        # A check like `if contract_id_from_event != self.contract_id_subscribed:` could be added
+        # inside the loop/processing block if necessary.
+        
     def _handle_depth_message(self, message_args: List[Any]):
         self.logger.debug(f"DataStream ({self.contract_id_subscribed}): _handle_depth_message raw args: {message_args}")
         if not isinstance(message_args, list) or len(message_args) < 2:
@@ -252,40 +330,173 @@ class DataStream:
              self.logger.warning(f"DataStream: Received depth for mismatched contract_id: {contract_id_from_event} (expected {self.contract_id_subscribed})")
 
     def _send_subscriptions(self):
+        """
+        Sends market data subscriptions to the Market Hub.
+        - Quotes, Trades, and Depth are explicitly subscribed if enabled, using
+        method names aligned with the provided JavaScript example for Market Hub.
+        - Each subscription now uses a manually generated unique invocationId.
+        """
         if not self.connection or self.connection_status != StreamConnectionState.CONNECTED:
-            self.logger.warning(f"DataStream (Contract: {self.contract_id_subscribed}): Cannot send subscriptions, not CONNECTED (current: {self.connection_status.name}).")
+            self.logger.warning(
+                f"DataStream ({self.contract_id_subscribed}): Cannot send subscriptions, "
+                f"not in CONNECTED state (current: {self.connection_status.name})."
+            )
             return
-        try:
-            self.logger.info(f"DataStream (Contract: {self.contract_id_subscribed}): Attempting to send subscriptions...")
-            
-            # Using documented method names for Market Hub (page 28 of your PDF)
-            if self.auto_subscribe_quotes and self._callbacks["quote"]:
-                self.logger.info(f"DataStream ({self.contract_id_subscribed}): Sending 'SubscribeContractQuotes' for {self.contract_id_subscribed}")
-                self.connection.send("SubscribeContractQuotes", [self.contract_id_subscribed])
-                time.sleep(0.1) 
-            
-            if self.auto_subscribe_trades and self._callbacks["trade"]:
-                # The Market Hub doc example (pg 28) listens for 'GatewayTrade' but doesn't show an explicit subscribe *method* for it.
-                # The User Hub doc example (pg 26) uses 'SubscribeTrades'.
-                # We will try 'SubscribeContractTrades' as a guess, or stick to the original 'SubscribeToTrades'.
-                # If 'SubscribeToTrades' is indeed only for user-specific trades on UserHub,
-                # then market-wide trades might be included with quote/depth or need a different method.
-                # For now, keeping 'SubscribeToTrades' as it was in your original DataStream.
-                # This might be a point of failure or no-op if the Market Hub doesn't recognize it.
-                trade_subscribe_method_name = "SubscribeToTrades" # Or "SubscribeContractTrades" - NEEDS VERIFICATION from API provider
-                self.logger.info(f"DataStream ({self.contract_id_subscribed}): Sending '{trade_subscribe_method_name}' for {self.contract_id_subscribed}. (Verify Market Hub method name if issues persist)")
-                self.connection.send(trade_subscribe_method_name, [self.contract_id_subscribed])
-                time.sleep(0.1)
 
-            if self.auto_subscribe_depth and self._callbacks["depth"]:
-                self.logger.info(f"DataStream ({self.contract_id_subscribed}): Sending 'SubscribeContractMarketDepth' for {self.contract_id_subscribed}")
-                self.connection.send("SubscribeContractMarketDepth", [self.contract_id_subscribed]) # Corrected from SubscribeToDepth
+        self.logger.info(
+            f"DataStream ({self.contract_id_subscribed}): >>> ENTERING _send_subscriptions (Manual InvocationIDs) <<<"
+        )
+        all_previous_sends_ok = True 
+        active_subscription_being_sent = "None"
+
+        try:
+            # --- QUOTES ---
+            if self.auto_subscribe_quotes and self._callbacks["quote"]:
+                active_subscription_being_sent = "SubscribeContractQuotes"
+                quote_invocation_id = str(uuid.uuid4()) # <--- Generate unique ID
+                self.logger.info(
+                    f"DataStream ({self.contract_id_subscribed}): Preparing to send '{active_subscription_being_sent}' "
+                    f"for contract '{self.contract_id_subscribed}' with InvocationID: {quote_invocation_id}"
+                )
+                time.sleep(0.2) 
+                try:
+                    # Pass the unique ID as the third argument
+                    self.connection.send(active_subscription_being_sent, [self.contract_id_subscribed], quote_invocation_id)
+                    self.logger.info(
+                        f"DataStream ({self.contract_id_subscribed}): '{active_subscription_being_sent}' SENT (ID: {quote_invocation_id}). "
+                        f"Connection state: {self.connection_status.name}"
+                    )
+                except Exception as e_send_quotes:
+                    self.logger.error(
+                        f"DataStream ({self.contract_id_subscribed}): Exception during self.connection.send for {active_subscription_being_sent} (ID: {quote_invocation_id}): {e_send_quotes}",
+                        exc_info=True
+                    )
+                    all_previous_sends_ok = False
+                
+                if all_previous_sends_ok:
+                    time.sleep(0.5) 
+                    if self.connection_status != StreamConnectionState.CONNECTED:
+                        self.logger.error(
+                            f"DataStream ({self.contract_id_subscribed}): Connection state changed to {self.connection_status.name} "
+                            f"after attempting {active_subscription_being_sent}. Halting further subscriptions."
+                        )
+                        all_previous_sends_ok = False
+            elif self.auto_subscribe_quotes and not self._callbacks["quote"]:
+                self.logger.warning(f"DataStream ({self.contract_id_subscribed}): auto_subscribe_quotes is True, but no quote callback is registered. Skipping quote subscription.")
+
+            # --- TRADES (Using SubscribeContractTrades) ---
+            if all_previous_sends_ok and self.auto_subscribe_trades and self._callbacks["trade"]:
+                active_subscription_being_sent = "SubscribeContractTrades"
+                trade_invocation_id = str(uuid.uuid4()) # <--- Generate unique ID
+                self.logger.info(
+                    f"DataStream ({self.contract_id_subscribed}): Preparing to send '{active_subscription_being_sent}' "
+                    f"for contract '{self.contract_id_subscribed}' with InvocationID: {trade_invocation_id}"
+                )
+                time.sleep(0.2)
+                try:
+                    # Pass the unique ID as the third argument
+                    self.connection.send(active_subscription_being_sent, [self.contract_id_subscribed], trade_invocation_id)
+                    self.logger.info(
+                        f"DataStream ({self.contract_id_subscribed}): '{active_subscription_being_sent}' SENT (ID: {trade_invocation_id}). "
+                        f"Connection state: {self.connection_status.name}"
+                    )
+                except Exception as e_send_trades:
+                    self.logger.error(
+                        f"DataStream ({self.contract_id_subscribed}): Exception during self.connection.send for {active_subscription_being_sent} (ID: {trade_invocation_id}): {e_send_trades}",
+                        exc_info=True
+                    )
+                    all_previous_sends_ok = False
+
+                if all_previous_sends_ok:
+                    time.sleep(0.5)
+                    if self.connection_status != StreamConnectionState.CONNECTED:
+                        self.logger.error(
+                            f"DataStream ({self.contract_id_subscribed}): Connection state changed to {self.connection_status.name} "
+                            f"after attempting {active_subscription_being_sent}. Halting further subscriptions."
+                        )
+                        all_previous_sends_ok = False
+            elif self.auto_subscribe_trades and not self._callbacks["trade"]:
+                self.logger.warning(f"DataStream ({self.contract_id_subscribed}): auto_subscribe_trades is True, but no trade callback is registered. Skipping trade subscription.")
+        
+            # --- DEPTH ---
+            # (Depth subscription logic remains the same, but would also benefit from a unique invocationId if used)
+            # For now, focusing on quotes and trades as per the problem. If depth becomes an issue, apply the same pattern.
+            self.logger.info( 
+                f"DataStream ({self.contract_id_subscribed}): >>> EVALUATING DEPTH SUBSCRIPTION BLOCK <<< "
+                f"all_previous_sends_ok={all_previous_sends_ok}, "
+                f"auto_sub_depth={self.auto_subscribe_depth}, "
+                f"depth_callback_exists={self._callbacks['depth'] is not None}"
+            )
+            if all_previous_sends_ok and self.auto_subscribe_depth and self._callbacks["depth"]:
+                active_subscription_being_sent = "SubscribeContractMarketDepth"
+                depth_invocation_id = str(uuid.uuid4()) # <--- Generate unique ID
+                self.logger.info(
+                    f"DataStream ({self.contract_id_subscribed}): >>> INSIDE DEPTH BLOCK - Preparing to send '{active_subscription_being_sent}' "
+                    f"for contract '{self.contract_id_subscribed}' with InvocationID: {depth_invocation_id} <<<"
+                )
+                time.sleep(0.2)
+                try:
+                    # Pass the unique ID as the third argument
+                    self.connection.send(active_subscription_being_sent, [self.contract_id_subscribed], depth_invocation_id)
+                    self.logger.info(
+                        f"DataStream ({self.contract_id_subscribed}): >>> DEPTH SUB '{active_subscription_being_sent}' SENT (ID: {depth_invocation_id}). "
+                        f"Current connection state BEFORE sleep: {self.connection_status.name} <<<"
+                    )
+                except Exception as e_send_depth:
+                    self.logger.error(
+                        f"DataStream ({self.contract_id_subscribed}): Exception during self.connection.send for {active_subscription_being_sent} (ID: {depth_invocation_id}): {e_send_depth}",
+                        exc_info=True
+                    )
+                    all_previous_sends_ok = False
+                
+                if all_previous_sends_ok:
+                    time.sleep(0.5)
+                    self.logger.info(
+                        f"DataStream ({self.contract_id_subscribed}): >>> AFTER 0.5s sleep for DEPTH SUB. "
+                        f"Current connection state: {self.connection_status.name} <<<"
+                    )
+                    if self.connection_status != StreamConnectionState.CONNECTED:
+                        self.logger.error(
+                            f"DataStream ({self.contract_id_subscribed}): Connection state changed to {self.connection_status.name} "
+                            f"after attempting {active_subscription_being_sent}."
+                        )
+                        all_previous_sends_ok = False 
+            elif self.auto_subscribe_depth and not self._callbacks["depth"]:
+                self.logger.warning(f"DataStream ({self.contract_id_subscribed}): auto_subscribe_depth is True, but no depth callback is registered. SKIPPING depth subscription.")
+            elif not (all_previous_sends_ok and self.auto_subscribe_depth):
+                self.logger.warning(
+                    f"DataStream ({self.contract_id_subscribed}): >>> SKIPPING DEPTH SUBSCRIPTION SEND (one or more prior conditions failed) <<< "
+                    f"Condition details: all_previous_sends_ok={all_previous_sends_ok}, "
+                    f"auto_sub_depth={self.auto_subscribe_depth}, "
+                    f"depth_callback_exists={self._callbacks['depth'] is not None}"
+                )
             
-            self.logger.info(f"DataStream (Contract: {self.contract_id_subscribed}): Subscription messages dispatched.")
-        except Exception as e: 
-            self.logger.error(f"DataStream (Contract: {self.contract_id_subscribed}): Error sending subscriptions: {e}", exc_info=True)
-            self._set_connection_state(StreamConnectionState.ERROR, f"Subscription send error: {type(e).__name__}")
-    
+            if all_previous_sends_ok and self.connection_status == StreamConnectionState.CONNECTED:
+                self.logger.info(
+                    f"DataStream ({self.contract_id_subscribed}): All enabled subscription messages dispatched "
+                    f"and connection remains CONNECTED."
+                )
+            elif self.connection_status != StreamConnectionState.CONNECTED:
+                self.logger.warning(
+                    f"DataStream ({self.contract_id_subscribed}): Subscription process completed, but connection is "
+                    f"no longer CONNECTED (Final State: {self.connection_status.name}). "
+                    f"One or more subscriptions likely failed and caused a disconnect/error."
+                )
+
+        except Exception as e_outer: 
+            self.logger.error(
+                f"DataStream ({self.contract_id_subscribed}): Unexpected outer exception during _send_subscriptions "
+                f"(current/last attempted send was '{active_subscription_being_sent}'): {e_outer}",
+                exc_info=True
+            )
+            if self.connection_status == StreamConnectionState.CONNECTED:
+                self._set_connection_state(StreamConnectionState.ERROR, f"Outer subscription send exception for {active_subscription_being_sent}: {type(e_outer).__name__}")
+        finally:
+            self.logger.info(
+                f"DataStream ({self.contract_id_subscribed}): <<< EXITING _send_subscriptions >>> "
+                f"(Final Connection State in method: {self.connection_status.name})"
+            )
+
     def start(self) -> bool:
         with self._connection_lock:
             self.logger.info(f"DataStream (Contract: {self.contract_id_subscribed}): Start called. Current state: {self.connection_status.name}")

@@ -62,32 +62,42 @@ class LiveCandleAggregator:
         
         Args:
             trade_data (Dict[str, Any]): A dictionary representing the trade, expected to contain:
-                'Timestamp' (str or datetime): The trade timestamp. ISO format string (e.g., with 'Z') or datetime object.
-                'Price' (float or int): The trade price.
-                'Volume' (float or int, optional): The trade volume. Defaults to 0.0 if missing.
+                'timestamp' (str or datetime): The trade timestamp. ISO format string (e.g., with 'Z') or datetime object. (Lowercase)
+                'price' (float or int): The trade price. (Lowercase)
+                'volume' (float or int, optional): The trade volume. Defaults to 0.0 if missing. (Lowercase)
         """
-        self.logger.info( # Use self.logger, which is instance-specific
-            f"Aggregator ({self.timeframe_seconds}s) add_trade CALLED. Price: {trade_data.get('Price')}, Vol: {trade_data.get('Volume')}, TS: {trade_data.get('Timestamp')}"
+        # Use lowercase keys here to match the incoming data from DataStream
+        log_price = trade_data.get('price')      # For logging
+        log_volume = trade_data.get('volume')    # For logging
+        log_timestamp = trade_data.get('timestamp') # For logging
+
+        self.logger.info( 
+            f"Aggregator ({self.timeframe_seconds}s) add_trade CALLED. Price: {log_price}, Vol: {log_volume}, TS: {log_timestamp}"
         )
         
-        timestamp_input = trade_data.get('Timestamp')
-        if timestamp_input is None: # More direct check for None
-            self.logger.warning("Trade data missing 'Timestamp'. Trade ignored. Data: %s", trade_data)
+        # --- Timestamp Parsing ---
+        timestamp_input = trade_data.get('timestamp') # ACTUAL PARSING KEY (lowercase)
+        if timestamp_input is None: 
+            self.logger.warning(f"Trade data missing 'timestamp'. Trade ignored. Data: {trade_data}")
             return
         
         timestamp: datetime # Type hint for clarity
         try:
             if isinstance(timestamp_input, str):
                 # Handle 'Z' for UTC and ensure it's parsed as timezone-aware
-                if timestamp_input.endswith('Z'):
-                    # datetime.fromisoformat struggles with 'Z' in some Python versions if not explicitly handled
-                    timestamp_input = timestamp_input[:-1] + '+00:00'
-                timestamp = datetime.fromisoformat(timestamp_input)
+                processed_timestamp_input = timestamp_input
+                if processed_timestamp_input.endswith('Z'):
+                    processed_timestamp_input = processed_timestamp_input[:-1] + '+00:00'
+                timestamp = datetime.fromisoformat(processed_timestamp_input)
             elif isinstance(timestamp_input, datetime):
                 timestamp = timestamp_input
             else:
-                self.logger.warning(f"Unexpected timestamp format: {type(timestamp_input)}. Value: '{timestamp_input}'. Trade ignored.")
-                return
+                # Attempt to convert to string if it's some other type that might be parseable
+                self.logger.debug(f"Timestamp input type {type(timestamp_input)} is not str or datetime. Attempting str conversion.")
+                timestamp_str_converted = str(timestamp_input)
+                if timestamp_str_converted.endswith('Z'):
+                    timestamp_str_converted = timestamp_str_converted[:-1] + '+00:00'
+                timestamp = datetime.fromisoformat(timestamp_str_converted)
 
             # Ensure timestamp is UTC aware and explicitly set to UTC
             if timestamp.tzinfo is None:
@@ -99,16 +109,17 @@ class LiveCandleAggregator:
             self.logger.error(f"Error parsing timestamp '{timestamp_input}': {e}. Trade data: {trade_data}. Trade ignored.", exc_info=True)
             return
         
-        price_input = trade_data.get('Price')
-        volume_input = trade_data.get('Volume', 0.0) # Default volume to 0.0 if missing
+        # --- Price and Volume Parsing ---
+        price_input = trade_data.get('price')     # ACTUAL PARSING KEY (lowercase)
+        volume_input = trade_data.get('volume', 0.0) # ACTUAL PARSING KEY (lowercase), Default volume to 0.0 if missing
 
         if price_input is None:
-            self.logger.warning("Trade data missing 'Price'. Trade ignored. Data: %s", trade_data)
+            self.logger.warning(f"Trade data missing 'price'. Trade ignored. Data: {trade_data}")
             return
         
         try:
             price = float(price_input)
-            size = float(volume_input)
+            size = float(volume_input) # API might send volume as string sometimes
             if size < 0:
                 self.logger.warning(f"Received negative trade volume ({size}) for price {price}. Using 0.0 volume.")
                 size = 0.0
@@ -116,9 +127,10 @@ class LiveCandleAggregator:
             self.logger.error(f"Error converting price/volume to float. Price: '{price_input}', Volume: '{volume_input}'. Error: {e}. Trade ignored.", exc_info=True)
             return
         
-        with self.lock:
+        # --- Candle Update Logic (Thread-Safe) ---
+        with self.lock: # Ensure thread safety for current_candle updates
             self._update_candle(timestamp, price, size)
-    
+            
     def _update_candle(self, timestamp: datetime, price: float, size: float):
         """
         Updates the current candle with new trade data.
