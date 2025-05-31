@@ -1,3 +1,5 @@
+<!-- GitAds-Verify: BZVWHB1BJNQ48CSO49SROZ5MN7DOUECO -->
+
 # tsxapipy: TopStep (ProjectX) API Python Library
 
 **Version:** 0.5.0 (Pydantic Integration & Stream Stability Refactor)
@@ -333,4 +335,3 @@ Contributions are welcome! Please see CONTRIBUTING.md (if available) or open an 
 License
 
 This project is licensed under the Apache License 2.0. See the LICENSE file.
-<!-- GitAds-Verify: BZVWHB1BJNQ48CSO49SROZ5MN7DOUECO -->
