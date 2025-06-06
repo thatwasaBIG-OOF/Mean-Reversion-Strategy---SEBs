@@ -1,223 +1,795 @@
 """
-Simplified order management with TSX API.
+Mean reversion trading strategy with Standard Error Bands (SEB).
+Refactored for simplicity and performance.
 """
 
 import logging
-from typing import Optional, Dict, Any
-from datetime import datetime
+import pytz
+import time
+from datetime import datetime, timedelta
+from typing import Optional, Dict, Any, List
 
-from core.position import OrderInfo
-from config.settings import OrderState
+from config.settings import StrategyConfig, TradingConfig, PositionState, OrderState, ExitReason
+from core.position import TradingState, OrderInfo
+from core.indicators import SEBCalculator
+from trading.order_manager import OrderManager
+from utils.price_utils import PriceUtils
+from utils.trade_logger import TradeLogger
 
+# Import TSX API constants
 try:
-    from tsxapipy import OrderPlacer
+    from tsxapipy.trading import (
+        ORDER_STATUS_FILLED,
+        ORDER_STATUS_CANCELLED,
+        ORDER_STATUS_REJECTED,
+        ORDER_STATUS_WORKING,
+        ORDER_STATUS_TO_STRING_MAP
+    )
 except ImportError:
-    try:
-        from tsxapipy.trading import OrderPlacer
-    except ImportError:
-        OrderPlacer = None
+    # Define fallback constants
+    ORDER_STATUS_FILLED = 1
+    ORDER_STATUS_CANCELLED = 2
+    ORDER_STATUS_REJECTED = 3
+    ORDER_STATUS_WORKING = 4
+    ORDER_STATUS_TO_STRING_MAP = {
+        1: "FILLED",
+        2: "CANCELLED",
+        3: "REJECTED",
+        4: "WORKING"
+    }
 
-class OrderManager:
-    """Simplified order management"""
 
-    def __init__(self, api_client=None, account_id: Optional[str] = None, 
-                 contract_id: Optional[str] = None, live_trading: bool = False):
-        self.api_client = api_client
-        self.account_id = int(account_id) if account_id else None
-        self.contract_id = contract_id
-        self.live_trading = live_trading
-        self.order_placer = None
+class MeanReversionStrategy:
+    """Simplified mean reversion trading strategy"""
+
+    def __init__(self, strategy_config: StrategyConfig, trading_config: TradingConfig):
+        # Validate configurations
+        strategy_config.validate()
+        trading_config.validate()
+
+        self.config = strategy_config
+        self.trading_config = trading_config
         self.logger = logging.getLogger(__name__)
 
-        if self.live_trading:
-            if not self.api_client:
-                raise ValueError("API client required for live trading")
-            self._initialize_order_placer()
-
-    def _initialize_order_placer(self):
-        """Initialize TSX API OrderPlacer"""
-        if self.api_client and self.account_id and self.contract_id and OrderPlacer:
-            try:
-                self.order_placer = OrderPlacer(
-                    api_client=self.api_client,
-                    account_id=self.account_id,
-                    default_contract_id=self.contract_id
-                )
-                self.logger.info("OrderPlacer initialized for live trading")
-            except Exception as e:
-                self.logger.error(f"Failed to initialize OrderPlacer: {e}")
-                raise
-
-    def place_limit_order(self, side: str, size: int, price: float) -> Optional[str]:
-        """Place a limit order"""
-        try:
-            if self.live_trading and self.order_placer:
-                order_id = self.order_placer.place_limit_order(
-                    side=side.upper(),
-                    size=size,
-                    limit_price=price,
-                    contract_id=self.contract_id
-                )
-                
-                if order_id:
-                    self.logger.info(f"Limit order placed: {side} {size} @ {price:.2f}, ID: {order_id}")
-                    return str(order_id)
-                else:
-                    self.logger.error("Failed to place limit order")
-                    return None
-            else:
-                # Simulation mode
-                sim_id = f"SIM_{side}_{datetime.now().strftime('%H%M%S%f')}"
-                self.logger.info(f"SIM Limit: {side} {size} @ {price:.2f}, ID: {sim_id}")
-                return sim_id
-
-        except Exception as e:
-            self.logger.error(f"Error placing limit order: {e}")
-            return None
-
-    def place_stop_market_order(self, side: str, size: int, price: float) -> Optional[str]:
-        """Place a stop market order"""
-        try:
-            if self.live_trading and self.order_placer:
-                order_id = self.order_placer.place_stop_market_order(
-                    side=side.upper(),
-                    size=size,
-                    stop_price=price,
-                    contract_id=self.contract_id
-                )
-                
-                if order_id:
-                    self.logger.info(f"Stop order placed: {side} {size} @ {price:.2f}, ID: {order_id}")
-                    return str(order_id)
-                else:
-                    self.logger.error("Failed to place stop order")
-                    return None
-            else:
-                # Simulation mode
-                sim_id = f"SIM_STOP_{side}_{datetime.now().strftime('%H%M%S%f')}"
-                self.logger.info(f"SIM Stop: {side} {size} @ {price:.2f}, ID: {sim_id}")
-                return sim_id
-
-        except Exception as e:
-            self.logger.error(f"Error placing stop order: {e}")
-            return None
-
-    def place_market_order(self, side: str, size: int) -> Optional[str]:
-        """Place a market order"""
-        try:
-            if self.live_trading and self.order_placer:
-                order_id = self.order_placer.place_market_order(
-                    side=side.upper(),
-                    size=size,
-                    contract_id=self.contract_id
-                )
-                
-                if order_id:
-                    self.logger.info(f"Market order placed: {side} {size}, ID: {order_id}")
-                    return str(order_id)
-                else:
-                    self.logger.error("Failed to place market order")
-                    return None
-            else:
-                # Simulation mode
-                sim_id = f"SIM_MKT_{side}_{datetime.now().strftime('%H%M%S%f')}"
-                self.logger.info(f"SIM Market: {side} {size}, ID: {sim_id}")
-                return sim_id
-
-        except Exception as e:
-            self.logger.error(f"Error placing market order: {e}")
-            return None
-
-    def cancel_order(self, order_id: str) -> bool:
-        """Cancel an order"""
-        if not order_id:
-            return False
-            
-        try:
-            if self.live_trading and self.order_placer:
-                if order_id.startswith('SIM_'):
-                    self.logger.warning(f"Cannot cancel simulation order in live mode: {order_id}")
-                    return False
-                
-                order_id_int = int(order_id)
-                success = self.order_placer.cancel_order(order_id=order_id_int)
-                
-                if success:
-                    self.logger.info(f"Order cancelled: {order_id}")
-                else:
-                    self.logger.error(f"Failed to cancel order: {order_id}")
-                
-                return success
-            else:
-                # Simulation mode
-                self.logger.info(f"SIM Order cancelled: {order_id}")
-                return True
-
-        except Exception as e:
-            self.logger.error(f"Error cancelling order {order_id}: {e}")
-            return False
-
-    def modify_order_price(self, order_info: OrderInfo, new_price: float) -> bool:
-        """Modify order price"""
-        if not order_info.order_id:
-            return False
-            
-        try:
-            if self.live_trading and self.order_placer:
-                if order_info.order_id.startswith('SIM_'):
-                    return False
-                
-                order_id_int = int(order_info.order_id)
-                
-                # Use appropriate parameter based on order type
-                if order_info.is_stop:
-                    success = self.order_placer.modify_order(
-                        order_id=order_id_int,
-                        new_stop_price=new_price
-                    )
-                else:
-                    success = self.order_placer.modify_order(
-                        order_id=order_id_int,
-                        new_limit_price=new_price
-                    )
-                
-                if success:
-                    order_info.price = new_price
-                    self.logger.info(f"Order modified: {order_info.order_id} -> {new_price:.2f}")
-                
-                return success
-            else:
-                # Simulation mode
-                order_info.price = new_price
-                self.logger.info(f"SIM Order modified: {order_info.order_id} -> {new_price:.2f}")
-                return True
-
-        except Exception as e:
-            self.logger.error(f"Error modifying order: {e}")
-            return False
-
-    def get_order_status(self, order_id: str) -> Optional[Dict[str, Any]]:
-        """Get order status - simplified version"""
-        if not order_id or not self.live_trading:
-            return None
-            
-        try:
-            # This would need to be implemented based on TSX API capabilities
-            # For now, return None to indicate status checking should be done via UserHubStream
-            return None
-            
-        except Exception as e:
-            self.logger.error(f"Error getting order status: {e}")
-            return None
-
-    def create_order_info(self, side: str, size: int, price: float, 
-                         order_id: Optional[str] = None, is_stop: bool = False) -> OrderInfo:
-        """Create an OrderInfo instance"""
-        return OrderInfo(
-            order_id=order_id,
-            side=side,
-            size=size,
-            price=price,
-            state=OrderState.PENDING if order_id else OrderState.NONE,
-            is_stop=is_stop
+        # Initialize components
+        self.seb_calculator = SEBCalculator(
+            strategy_config.sample_period,
+            strategy_config.standard_errors,
+            strategy_config.averaging_periods
         )
+
+        self.order_manager = OrderManager(
+            api_client=trading_config.api_client,
+            account_id=trading_config.account_id,
+            contract_id=trading_config.contract_id,
+            live_trading=trading_config.live_trading
+        )
+
+        self.trade_logger = TradeLogger(strategy_config.log_file)
+
+        # State management - simplified
+        self.state = TradingState()
+        self.candle_history: List[float] = []
+        self.current_candle: Optional[Dict[str, Any]] = None
+        self.seb_bands: Dict[str, float] = {}
+        self.current_price: float = 0.0
+
+        # Order status tracking for UserHubStream
+        self._order_status_cache: Dict[str, int] = {}
+        self._last_order_check_time = 0
+
+        # Strategy control
+        self._last_signal: Optional[str] = None
+        self._tick_count = 0
+        self.eastern = pytz.timezone('US/Eastern')
+
+        # Initialize with historical data
+        self._initialize_historical_data()
+
+        mode = "LIVE" if trading_config.live_trading else "SIMULATION"
+        self.logger.info(f"Mean Reversion Strategy initialized in {mode} mode")
+
+    def _initialize_historical_data(self):
+        """Load historical data to initialize SEB"""
+        if not self.trading_config.api_client or not self.trading_config.contract_id:
+            self.logger.info("No API client/contract - using simulation mode")
+            return
+
+        try:
+            end_time = datetime.now()
+            start_time = end_time - timedelta(hours=3)
+
+            bars = self.trading_config.api_client.get_historical_bars(
+                contract_id=self.trading_config.contract_id,
+                unit=2,  # Minutes
+                unit_number=self.config.candle_interval_minutes,
+                start_time_iso=start_time.isoformat(),
+                end_time_iso=end_time.isoformat(),
+                limit=self.config.sample_period + 10
+            )
+
+            if bars and bars.bars:
+                closes = [bar.c for bar in bars.bars if bar.c is not None]
+                if len(closes) >= self.config.sample_period:
+                    self.candle_history = closes[-self.config.sample_period:]
+                    self.seb_bands = self.seb_calculator.calculate(self.candle_history) or {}
+                    if closes:
+                        self.current_price = closes[-1]
+                    self.logger.info("SEB initialized with historical data")
+
+        except Exception as e:
+            self.logger.error(f"Error initializing historical data: {e}")
+
+    def process_tick(self, price_data: Dict[str, Any]):
+        """Process incoming market tick"""
+        try:
+            # Extract and validate price
+            price = float(price_data.get('price', 0))
+            if not PriceUtils.validate_price(price):
+                return
+
+            self.current_price = price
+            self._tick_count += 1
+
+            # Update candle data
+            self._update_candle_data(price)
+
+            # CRITICAL: Check for fills proactively in live trading
+            if self.trading_config.live_trading:
+                self._check_pending_order_fills()
+
+            # Check for fills in simulation mode
+            if not self.trading_config.live_trading:
+                self._check_for_fills()
+
+            # Process strategy logic
+            if self.seb_bands:
+                if self.state.is_flat() and not self.state.has_pending_orders():
+                    self._check_entry_signals(price)
+                elif not self.state.is_flat():
+                    self._update_position_tracking(price)
+                    self._check_exit_conditions(price)
+
+        except Exception as e:
+            self.logger.error(f"Error processing tick: {e}")
+
+    def check_order_status_via_api(self, order_id: str) -> Optional[int]:
+        """Fallback method to check order status directly via API"""
+        if not self.trading_config.live_trading or not order_id:
+            return None
+            
+        try:
+            # Use the raw API client to check order status
+            api_client = self.trading_config.api_client
+            if not api_client:
+                return None
+                
+            # Try to get order details
+            account_id = int(self.trading_config.account_id)
+            
+            # Search recent orders
+            from datetime import datetime, timedelta
+            end_time = datetime.now()
+            start_time = end_time - timedelta(hours=1)
+            
+            # Get recent orders
+            orders = api_client.search_account_orders(
+                account_id=account_id,
+                start_time=start_time,
+                end_time=end_time
+            )
+            
+            if orders:
+                for order in orders:
+                    if str(order.id) == order_id:
+                        # Map status string to numeric code
+                        status_str = getattr(order, 'status', 'UNKNOWN')
+                        if status_str in ['FILLED', 'COMPLETELY_FILLED']:
+                            return ORDER_STATUS_FILLED
+                        elif status_str == 'CANCELLED':
+                            return ORDER_STATUS_CANCELLED
+                        elif status_str == 'REJECTED':
+                            return ORDER_STATUS_REJECTED
+                        elif status_str in ['WORKING', 'PENDING', 'OPEN']:
+                            return ORDER_STATUS_WORKING
+                        
+            return None
+            
+        except Exception as e:
+            self.logger.error(f"Error checking order status via API: {e}")
+            return None
+
+    def _check_pending_order_fills(self):
+        """Proactively check if pending orders have been filled based on cache"""
+        import time
+        current_time = time.time()
+        
+        # Only do API check every 5 seconds to avoid rate limits
+        should_check_api = (current_time - self._last_order_check_time) > 5
+        
+        # Check entry order
+        if self.state.entry_order.is_pending() and self.state.entry_order.order_id:
+            cached_status = self._order_status_cache.get(self.state.entry_order.order_id, -1)
+            
+            # If no cached status and enough time has passed, check via API
+            if cached_status == -1 and should_check_api:
+                api_status = self.check_order_status_via_api(self.state.entry_order.order_id)
+                if api_status is not None:
+                    self._order_status_cache[self.state.entry_order.order_id] = api_status
+                    cached_status = api_status
+                    self._last_order_check_time = current_time
+            
+            if cached_status == ORDER_STATUS_FILLED:
+                self.logger.info(f"Detected entry order fill: {self.state.entry_order.order_id}")
+                self._handle_entry_fill(self.state.entry_order.side, self.state.entry_order.price)
+            elif cached_status in [ORDER_STATUS_CANCELLED, ORDER_STATUS_REJECTED]:
+                self.logger.info(f"Entry order cancelled/rejected: {self.state.entry_order.order_id}")
+                self.state.entry_order.reset()
+
+        # Check exit orders
+        if self.state.partial_exit_order.is_pending() and self.state.partial_exit_order.order_id:
+            cached_status = self._order_status_cache.get(self.state.partial_exit_order.order_id, -1)
+            if cached_status == ORDER_STATUS_FILLED:
+                self.logger.info(f"Detected partial exit fill: {self.state.partial_exit_order.order_id}")
+                self._handle_partial_exit_fill()
+
+        if self.state.full_exit_order.is_pending() and self.state.full_exit_order.order_id:
+            cached_status = self._order_status_cache.get(self.state.full_exit_order.order_id, -1)
+            if cached_status == ORDER_STATUS_FILLED:
+                self.logger.info(f"Detected full exit fill: {self.state.full_exit_order.order_id}")
+                self._handle_full_exit_fill()
+
+    def _update_candle_data(self, price: float):
+        """Update candle data and recalculate SEB"""
+        now = datetime.now(tz=self.eastern)
+        candle_time = now.replace(second=0, microsecond=0)
+        interval = self.config.candle_interval_minutes
+        minute = candle_time.minute - (candle_time.minute % interval)
+        start_time = candle_time.replace(minute=minute)
+
+        # Update or create candle
+        if self.current_candle and self.current_candle['start_time'] == start_time:
+            # Update existing candle
+            self.current_candle['high'] = max(self.current_candle['high'], price)
+            self.current_candle['low'] = min(self.current_candle['low'], price)
+            self.current_candle['close'] = price
+        else:
+            # Complete previous candle
+            if self.current_candle:
+                self.candle_history.append(self.current_candle['close'])
+                if len(self.candle_history) > self.config.sample_period:
+                    self.candle_history.pop(0)
+
+                # Recalculate SEB
+                new_bands = self.seb_calculator.calculate(self.candle_history)
+                if new_bands:
+                    self.seb_bands = new_bands
+                    self._check_order_updates()
+
+            # Start new candle
+            self.current_candle = {
+                'start_time': start_time,
+                'open': price,
+                'high': price,
+                'low': price,
+                'close': price
+            }
+
+    def _check_entry_signals(self, price: float):
+        """Check for entry signals"""
+        if not self.seb_bands:
+            return
+
+        # Check if in exit cooldown
+        if self.state.should_block_entry(self._last_signal, self.config.entry_order_cooldown_seconds):
+            return
+
+        # Get signal
+        signal = self.seb_calculator.get_signal(price, self.seb_bands, self.config.band_threshold)
+
+        if signal and signal != self._last_signal:
+            if signal == 'BUY':
+                stop_price = PriceUtils.round_to_tick(
+                    self.seb_bands['lower_band'], self.config.tick_size
+                )
+                self._place_entry_order('BUY', stop_price)
+            elif signal == 'SELL':
+                stop_price = PriceUtils.round_to_tick(
+                    self.seb_bands['upper_band'], self.config.tick_size
+                )
+                self._place_entry_order('SELL', stop_price)
+
+            self._last_signal = signal
+        elif not signal:
+            self._last_signal = None
+
+    def _place_entry_order(self, side: str, price: float):
+        """Place entry order"""
+        order_id = self.order_manager.place_stop_market_order(
+            side=side,
+            size=self.config.initial_position_size,
+            price=price
+        )
+
+        if order_id:
+            self.state.entry_order = self.order_manager.create_order_info(
+                side=side,
+                size=self.config.initial_position_size,
+                price=price,
+                order_id=order_id,
+                is_stop=True
+            )
+            self.logger.info(f"Entry order placed: {side} @ {price:.2f}")
+
+            # Simulate immediate fill in sim mode
+            if not self.trading_config.live_trading:
+                self._handle_entry_fill(side, price)
+
+    def _handle_entry_fill(self, side: str, fill_price: float):
+        """Handle entry order fill"""
+        # Set position
+        self.state.position_side = PositionState.LONG if side == 'BUY' else PositionState.SHORT
+        self.state.position_size = self.config.initial_position_size
+        self.state.entry_price = fill_price
+        self.state.entry_time = datetime.now(tz=self.eastern)
+        self.state.best_price = fill_price
+
+        # Set stop loss
+        self.state.stop_loss = PriceUtils.calculate_stop_price(
+            entry_price=fill_price,
+            distance=self.config.stop_loss_distance,
+            is_long=self.state.is_long(),
+            tick_size=self.config.tick_size
+        )
+
+        # Mark entry order as filled
+        self.state.entry_order.state = OrderState.FILLED
+
+        # Place exit orders
+        self._place_exit_orders()
+
+        self.logger.info(
+            f"Position opened: {side} {self.config.initial_position_size} @ {fill_price:.2f}, "
+            f"Stop: {self.state.stop_loss:.2f}"
+        )
+
+    def _place_exit_orders(self):
+        """Place exit orders"""
+        if not self.seb_bands or self.state.is_flat():
+            return
+
+        exit_side = 'SELL' if self.state.is_long() else 'BUY'
+
+        # Calculate target prices
+        mean_price = PriceUtils.round_to_tick(self.seb_bands['mean'], self.config.tick_size)
+        target_price = PriceUtils.round_to_tick(
+            self.seb_bands['upper_band'] if self.state.is_long() else self.seb_bands['lower_band'],
+            self.config.tick_size
+        )
+
+        # Place partial exit at mean
+        if self.config.partial_exit_at_mean:
+            partial_id = self.order_manager.place_limit_order(
+                side=exit_side,
+                size=self.config.partial_exit_size,
+                price=mean_price
+            )
+
+            if partial_id:
+                self.state.partial_exit_order = self.order_manager.create_order_info(
+                    side=exit_side,
+                    size=self.config.partial_exit_size,
+                    price=mean_price,
+                    order_id=partial_id,
+                    is_stop=False
+                )
+
+        # Place full exit at target
+        remaining_size = self.state.position_size
+        if self.config.partial_exit_at_mean:
+            remaining_size -= self.config.partial_exit_size
+
+        full_id = self.order_manager.place_limit_order(
+            side=exit_side,
+            size=remaining_size,
+            price=target_price
+        )
+
+        if full_id:
+            self.state.full_exit_order = self.order_manager.create_order_info(
+                side=exit_side,
+                size=remaining_size,
+                price=target_price,
+                order_id=full_id,
+                is_stop=False
+            )
+
+    def _update_position_tracking(self, price: float):
+        """Update position tracking"""
+        if self.state.is_flat():
+            return
+
+        # Update best price
+        if self.state.is_long() and price > self.state.best_price:
+            self.state.best_price = price
+        elif self.state.is_short() and price < self.state.best_price:
+            self.state.best_price = price
+
+        # Calculate excursion
+        excursion = PriceUtils.calculate_excursion(
+            self.state.entry_price, price, self.state.is_long()
+        )
+
+        # Update max favorable/adverse
+        if excursion > self.state.max_favorable:
+            self.state.max_favorable = excursion
+        elif excursion < 0 and abs(excursion) > self.state.max_adverse:
+            self.state.max_adverse = abs(excursion)
+
+        # Check trail stop activation
+        if not self.state.trail_activated and excursion >= self.config.trail_activation_distance:
+            self.state.trail_activated = True
+            self.logger.info("Trailing stop activated")
+
+        # Update trailing stop
+        if self.state.trail_activated:
+            new_trail = PriceUtils.calculate_trail_stop(
+                best_price=self.state.best_price,
+                trail_distance=self.config.trail_stop_distance,
+                is_long=self.state.is_long(),
+                tick_size=self.config.tick_size
+            )
+
+            if self.state.is_long():
+                self.state.trail_stop = max(self.state.trail_stop or 0, new_trail)
+            else:
+                self.state.trail_stop = min(self.state.trail_stop or float('inf'), new_trail)
+
+    def _check_exit_conditions(self, price: float):
+        """Check stop loss and trailing stop conditions"""
+        if self.state.is_flat():
+            return
+
+        # Check position timeout
+        if self.state.entry_time:
+            time_in_position = (datetime.now(tz=self.eastern) - self.state.entry_time).total_seconds()
+            if time_in_position > self.config.max_position_time_minutes * 60:
+                self._emergency_exit(price, ExitReason.TIMEOUT)
+                return
+
+        # Check stop loss
+        if self.state.stop_loss:
+            if (self.state.is_long() and price <= self.state.stop_loss) or \
+               (self.state.is_short() and price >= self.state.stop_loss):
+                self._emergency_exit(price, ExitReason.STOP_LOSS)
+                return
+
+        # Check trailing stop
+        if self.state.trail_stop:
+            if (self.state.is_long() and price <= self.state.trail_stop) or \
+               (self.state.is_short() and price >= self.state.trail_stop):
+                self._emergency_exit(price, ExitReason.TRAIL_STOP)
+                return
+
+    def _emergency_exit(self, price: float, reason: ExitReason):
+        """Emergency exit position"""
+        # Cancel pending exit orders
+        self._cancel_exit_orders()
+
+        # Place market order
+        exit_side = 'SELL' if self.state.is_long() else 'BUY'
+        order_id = self.order_manager.place_market_order(
+            side=exit_side,
+            size=self.state.position_size
+        )
+
+        if order_id:
+            # Calculate and record P&L
+            pnl_points = PriceUtils.calculate_pnl_points(
+                entry_price=self.state.entry_price,
+                exit_price=price,
+                size=self.state.position_size,
+                is_long=self.state.is_long()
+            )
+
+            self.state.update_trade_metrics(pnl_points)
+            self.state.update_exit_info(reason, self.state.position_side, price)
+
+            # Log trade
+            if self.config.log_trades:
+                self.trade_logger.log_trade(self.state, price, reason.value, self.config)
+
+            # Display result
+            self._display_trade_result(price, reason.value, pnl_points)
+
+            # Reset state
+            self.state.reset_all()
+
+            self.logger.info(f"Emergency exit: {reason.value} @ {price:.2f}")
+
+    def _check_order_updates(self):
+        """Check if orders need price updates due to band changes"""
+        if not self.seb_bands:
+            return
+
+        # Update entry order - but ONLY if it's still pending
+        if self.state.entry_order.is_pending() and self.state.entry_order.order_id:
+            # First check if order is still actually pending (not filled)
+            if self.trading_config.live_trading:
+                # Check our cache first
+                cached_status = self._order_status_cache.get(self.state.entry_order.order_id, -1)
+                if cached_status == ORDER_STATUS_FILLED:
+                    self.logger.info(f"Entry order {self.state.entry_order.order_id} already filled (from cache)")
+                    self._handle_entry_fill(self.state.entry_order.side, self.state.entry_order.price)
+                    return
+                elif cached_status in [ORDER_STATUS_CANCELLED, ORDER_STATUS_REJECTED]:
+                    self.logger.info(f"Entry order {self.state.entry_order.order_id} was cancelled/rejected")
+                    self.state.entry_order.reset()
+                    return
+            
+            # If still pending, check for price update
+            new_price = None
+            if self.state.entry_order.side == 'BUY':
+                new_price = PriceUtils.round_to_tick(self.seb_bands['lower_band'], self.config.tick_size)
+            elif self.state.entry_order.side == 'SELL':
+                new_price = PriceUtils.round_to_tick(self.seb_bands['upper_band'], self.config.tick_size)
+
+            if new_price and abs(new_price - self.state.entry_order.price) >= self.config.order_update_threshold:
+                self.logger.info(f"Updating entry order price: {self.state.entry_order.price:.2f} -> {new_price:.2f}")
+                success = self.order_manager.modify_order_price(self.state.entry_order, new_price)
+                if not success:
+                    # Modification failed - order might be filled
+                    self.logger.warning("Failed to modify entry order - checking if filled")
+                    cached_status = self._order_status_cache.get(self.state.entry_order.order_id, -1)
+                    if cached_status == ORDER_STATUS_FILLED:
+                        self._handle_entry_fill(self.state.entry_order.side, self.state.entry_order.price)
+
+        # Update exit orders
+        if not self.state.is_flat():
+            # Update partial exit
+            if self.state.partial_exit_order.is_pending():
+                mean_price = PriceUtils.round_to_tick(self.seb_bands['mean'], self.config.tick_size)
+                if abs(mean_price - self.state.partial_exit_order.price) >= self.config.exit_order_update_threshold:
+                    self.order_manager.modify_order_price(self.state.partial_exit_order, mean_price)
+
+            # Update full exit
+            if self.state.full_exit_order.is_pending():
+                target_price = PriceUtils.round_to_tick(
+                    self.seb_bands['upper_band'] if self.state.is_long() else self.seb_bands['lower_band'],
+                    self.config.tick_size
+                )
+                if abs(target_price - self.state.full_exit_order.price) >= self.config.exit_order_update_threshold:
+                    self.order_manager.modify_order_price(self.state.full_exit_order, target_price)
+
+    def _check_for_fills(self):
+        """Check for order fills in simulation mode"""
+        if self.trading_config.live_trading:
+            return  # Live fills handled by UserHubStream
+
+        # Check entry order
+        if self.state.entry_order.is_pending():
+            if (self.state.entry_order.side == 'BUY' and self.current_price <= self.state.entry_order.price) or \
+               (self.state.entry_order.side == 'SELL' and self.current_price >= self.state.entry_order.price):
+                self._handle_entry_fill(self.state.entry_order.side, self.state.entry_order.price)
+
+        # Check exit orders
+        if self.state.partial_exit_order.is_pending():
+            if (self.state.partial_exit_order.side == 'SELL' and self.current_price >= self.state.partial_exit_order.price) or \
+               (self.state.partial_exit_order.side == 'BUY' and self.current_price <= self.state.partial_exit_order.price):
+                self._handle_partial_exit_fill()
+
+        if self.state.full_exit_order.is_pending():
+            if (self.state.full_exit_order.side == 'SELL' and self.current_price >= self.state.full_exit_order.price) or \
+               (self.state.full_exit_order.side == 'BUY' and self.current_price <= self.state.full_exit_order.price):
+                self._handle_full_exit_fill()
+
+    def handle_order_update(self, order_update: Dict[str, Any]):
+        """Handle order updates from UserHubStream"""
+        try:
+            order_id = str(order_update.get('id', ''))
+            status = order_update.get('status', -1)
+            
+            # Log the update
+            status_str = ORDER_STATUS_TO_STRING_MAP.get(status, f"UNKNOWN({status})")
+            self.logger.debug(f"Order update - ID: {order_id}, Status: {status_str}")
+
+            # Update cache
+            self._order_status_cache[order_id] = status
+
+            # Check if it's one of our orders
+            if order_id == self.state.entry_order.order_id:
+                if status == ORDER_STATUS_FILLED and not self.state.entry_order.is_filled():
+                    fill_price = order_update.get('avgPx', order_update.get('averageFillPrice', self.state.entry_order.price))
+                    filled_qty = order_update.get('cumQuantity', order_update.get('filledQuantity', self.state.entry_order.size))
+                    
+                    self.logger.info(f"🎯 Entry order FILLED: {self.state.entry_order.side} {filled_qty} @ {fill_price:.2f}")
+                    self.state.entry_order.state = OrderState.FILLED
+                    self._handle_entry_fill(self.state.entry_order.side, fill_price)
+                    
+                elif status in [ORDER_STATUS_CANCELLED, ORDER_STATUS_REJECTED]:
+                    self.logger.info(f"Entry order {status_str}: ID {order_id}")
+                    self.state.entry_order.reset()
+
+            elif order_id == self.state.partial_exit_order.order_id:
+                if status == ORDER_STATUS_FILLED and not self.state.partial_exit_order.is_filled():
+                    self.logger.info(f"🎯 Partial exit FILLED: ID {order_id}")
+                    self.state.partial_exit_order.state = OrderState.FILLED
+                    self._handle_partial_exit_fill()
+
+            elif order_id == self.state.full_exit_order.order_id:
+                if status == ORDER_STATUS_FILLED and not self.state.full_exit_order.is_filled():
+                    self.logger.info(f"🎯 Full exit FILLED: ID {order_id}")
+                    self.state.full_exit_order.state = OrderState.FILLED
+                    self._handle_full_exit_fill()
+
+        except Exception as e:
+            self.logger.error(f"Error handling order update: {e}")
+
+    def handle_position_update(self, position_update: Dict[str, Any]):
+        """Handle position updates from UserHubStream"""
+        try:
+            contract_id = str(position_update.get('contractId', ''))
+            quantity = position_update.get('quantity', 0)
+            avg_price = position_update.get('averagePrice', 0.0)
+
+            # Check if this is our contract
+            if str(self.trading_config.contract_id) in contract_id:
+                self.logger.debug(f"Position update - Contract: {contract_id}, Qty: {quantity}, Avg: {avg_price:.2f}")
+
+                # Sync position if needed
+                if quantity == 0 and not self.state.is_flat():
+                    self.logger.warning("Position sync: Account is flat but strategy has position - resetting")
+                    self.state.reset_all()
+                elif quantity != 0 and self.state.is_flat():
+                    self.logger.warning(f"Position sync: Found position {quantity} @ {avg_price:.2f} but strategy is flat")
+                    # Optionally sync the position here
+
+        except Exception as e:
+            self.logger.error(f"Error handling position update: {e}")
+
+    def _handle_partial_exit_fill(self):
+        """Handle partial exit fill"""
+        self.state.position_size -= self.config.partial_exit_size
+        self.state.partial_exit_order.state = OrderState.FILLED
+        self.state.partial_exit_order.reset()
+        self.logger.info(f"Partial exit filled - {self.state.position_size} contracts remaining")
+
+    def _handle_full_exit_fill(self):
+        """Handle full exit fill"""
+        # Calculate P&L
+        pnl_points = PriceUtils.calculate_pnl_points(
+            entry_price=self.state.entry_price,
+            exit_price=self.state.full_exit_order.price,
+            size=self.state.position_size,
+            is_long=self.state.is_long()
+        )
+
+        self.state.update_trade_metrics(pnl_points)
+        self.state.update_exit_info(ExitReason.TARGET_HIT, self.state.position_side, self.state.full_exit_order.price)
+
+        # Log trade
+        if self.config.log_trades:
+            self.trade_logger.log_trade(self.state, self.state.full_exit_order.price, ExitReason.TARGET_HIT.value, self.config)
+
+        # Display result
+        self._display_trade_result(self.state.full_exit_order.price, ExitReason.TARGET_HIT.value, pnl_points)
+
+        # Reset state
+        self.state.reset_all()
+
+    def _cancel_exit_orders(self):
+        """Cancel all pending exit orders"""
+        if self.state.partial_exit_order.is_pending() and self.state.partial_exit_order.order_id:
+            self.order_manager.cancel_order(self.state.partial_exit_order.order_id)
+            self.state.partial_exit_order.reset()
+
+        if self.state.full_exit_order.is_pending() and self.state.full_exit_order.order_id:
+            self.order_manager.cancel_order(self.state.full_exit_order.order_id)
+            self.state.full_exit_order.reset()
+
+    def _display_trade_result(self, exit_price: float, reason: str, pnl_points: float):
+        """Display trade result"""
+        pnl_dollars = PriceUtils.points_to_dollars(pnl_points, self.config.tick_size, self.config.tick_value)
+        emoji = "💰" if pnl_points >= 0 else "💸"
+
+        duration = 0
+        if self.state.entry_time:
+            duration = (datetime.now(tz=self.eastern) - self.state.entry_time).total_seconds() / 60
+
+        self.logger.info(
+            f"{emoji} Exit @ {exit_price:.2f} | {reason} | "
+            f"P&L: {pnl_points:+.2f}pts (${pnl_dollars:+.0f}) | "
+            f"Duration: {duration:.1f}m | "
+            f"Daily: {self.state.daily_pnl:+.2f}pts"
+        )
+
+    def flatten_all_positions(self) -> bool:
+        """Emergency flatten all positions"""
+        try:
+            # Cancel all orders
+            if self.state.entry_order.is_pending() and self.state.entry_order.order_id:
+                self.order_manager.cancel_order(self.state.entry_order.order_id)
+
+            self._cancel_exit_orders()
+
+            # Close position if any
+            if not self.state.is_flat():
+                self._emergency_exit(self.current_price, ExitReason.MANUAL_FLATTEN)
+
+            # Reset state
+            self.state.reset_all()
+            return True
+
+        except Exception as e:
+            self.logger.error(f"Error flattening positions: {e}")
+            self.state.reset_all()
+            return False
+
+    def cancel_all_pending_orders(self) -> bool:
+        """Cancel all pending orders"""
+        success = True
+
+        if self.state.entry_order.is_pending() and self.state.entry_order.order_id:
+            if not self.order_manager.cancel_order(self.state.entry_order.order_id):
+                success = False
+            self.state.entry_order.reset()
+
+        if self.state.partial_exit_order.is_pending() and self.state.partial_exit_order.order_id:
+            if not self.order_manager.cancel_order(self.state.partial_exit_order.order_id):
+                success = False
+            self.state.partial_exit_order.reset()
+
+        if self.state.full_exit_order.is_pending() and self.state.full_exit_order.order_id:
+            if not self.order_manager.cancel_order(self.state.full_exit_order.order_id):
+                success = False
+            self.state.full_exit_order.reset()
+
+        return success
+
+    def get_status(self) -> Dict[str, Any]:
+        """Get strategy status"""
+        live_pnl_points, live_pnl_dollars = 0.0, 0.0
+
+        if not self.state.is_flat() and self.current_price > 0:
+            live_pnl_points, live_pnl_dollars = PriceUtils.get_live_pnl(
+                entry_price=self.state.entry_price,
+                current_price=self.current_price,
+                size=self.state.position_size,
+                is_long=self.state.is_long(),
+                tick_size=self.config.tick_size,
+                tick_value=self.config.tick_value
+            )
+
+        status = self.state.to_dict()
+        status.update({
+            'live_pnl_points': live_pnl_points,
+            'live_pnl_dollars': live_pnl_dollars,
+            'current_price': self.current_price,
+            'seb_bands': self.seb_bands,
+            'candle_count': len(self.candle_history),
+            'ticks_processed': self._tick_count,
+            'live_trading': self.trading_config.live_trading
+        })
+
+        return status
+
+    def get_performance_summary(self) -> Dict[str, Any]:
+        """Get performance summary"""
+        return {
+            'total_trades': self.state.total_trades,
+            'winning_trades': self.state.winning_trades,
+            'win_rate': self.state.get_win_rate(),
+            'total_pnl_points': self.state.total_pnl,
+            'total_pnl_dollars': PriceUtils.points_to_dollars(
+                self.state.total_pnl, self.config.tick_size, self.config.tick_value
+            ),
+            'daily_pnl_points': self.state.daily_pnl,
+            'daily_pnl_dollars': PriceUtils.points_to_dollars(
+                self.state.daily_pnl, self.config.tick_size, self.config.tick_value
+            ),
+            'largest_win': self.state.largest_win,
+            'largest_loss': self.state.largest_loss,
+            'consecutive_losses': self.state.consecutive_losses,
+            'max_consecutive_losses': self.state.max_consecutive_losses,
+            'ticks_processed': self._tick_count
+        }
