@@ -1,6 +1,6 @@
 """
 Main entry point for the mean reversion trading strategy.
-Simplified and streamlined version.
+Fixed version with proper UserHubStream integration.
 """
 
 import sys
@@ -39,6 +39,7 @@ strategy: Optional[MeanReversionStrategy] = None
 data_stream: Optional[DataStream] = None
 user_stream: Optional[UserHubStream] = None
 running = True
+current_account_id: Optional[int] = None
 
 
 def signal_handler(signum, frame):
@@ -58,32 +59,71 @@ def handle_market_data(market_data: Dict[str, Any]):
         })
 
 
-def handle_order_update(order_update):
-    """Handle order updates from UserHubStream"""
+def handle_user_order_update(order_data: Dict[str, Any]):
+    """Handle order updates from UserHubStream - FIXED version"""
     if strategy:
+        logger.debug(f"Order update received: {order_data}")
+        # Convert the dictionary format to what strategy expects
+        order_update = {
+            'id': order_data.get('id', ''),
+            'status': order_data.get('status', -1),
+            'avgPx': order_data.get('averageFillPrice', 0.0),
+            'cumQuantity': order_data.get('filledQuantity', 0),
+            'accountId': order_data.get('accountId', current_account_id)
+        }
         strategy.handle_order_update(order_update)
 
 
-def handle_position_update(position_update):
-    """Handle position updates from UserHubStream"""
+def handle_user_position_update(position_data: Dict[str, Any]):
+    """Handle position updates from UserHubStream - FIXED version"""
     if strategy:
+        logger.debug(f"Position update received: {position_data}")
+        # Convert the dictionary format to what strategy expects
+        position_update = {
+            'contractId': position_data.get('contractId', ''),
+            'quantity': position_data.get('quantity', 0),
+            'averagePrice': position_data.get('averagePrice', 0.0),
+            'accountId': position_data.get('accountId', current_account_id)
+        }
         strategy.handle_position_update(position_update)
 
 
+def handle_user_account_update(account_data: Dict[str, Any]):
+    """Handle account updates - for monitoring purposes"""
+    logger.debug(f"Account update for ID {account_data.get('id', 'N/A')}: "
+                f"Balance: {account_data.get('cashBalance', 'N/A')}")
+
+
+def handle_user_trade_execution(trade_data: Dict[str, Any]):
+    """Handle trade execution updates"""
+    logger.info(f"Trade execution: {trade_data.get('side', 'N/A')} "
+                f"{trade_data.get('quantity', 0)} @ {trade_data.get('price', 0)}")
+
+
+def handle_user_stream_state_change(state_str: str):
+    """Handle UserHubStream state changes"""
+    logger.info(f"UserHubStream state: {state_str}")
+
+
+def handle_user_stream_error(error: Any):
+    """Handle UserHubStream errors"""
+    logger.error(f"UserHubStream error: {error}")
+
+
 def handle_stream_state_change(state_str: str):
-    """Handle stream state changes"""
+    """Handle market data stream state changes"""
     if isinstance(state_str, str):
-        logger.info(f"Stream state: {state_str}")
+        logger.info(f"DataStream state: {state_str}")
     else:
         logger.warning(f"Unexpected state type: {type(state_str)} - {state_str}")
 
 
 def handle_stream_error(error: Any):
-    """Handle stream errors"""
+    """Handle market data stream errors"""
     if error:
-        logger.error(f"Stream error: {type(error).__name__} - {str(error)[:200]}")
+        logger.error(f"DataStream error: {type(error).__name__} - {str(error)[:200]}")
     else:
-        logger.error("Stream error with no details")
+        logger.error("DataStream error with no details")
 
 
 def print_commands():
@@ -266,7 +306,7 @@ def select_mode() -> bool:
 
 def main():
     """Main entry point"""
-    global strategy, data_stream, user_stream, running
+    global strategy, data_stream, user_stream, running, current_account_id
     
     # Setup signal handlers
     signal.signal(signal.SIGINT, signal_handler)
@@ -290,6 +330,7 @@ def main():
         account_id = select_account(api_client)
         if not account_id:
             return
+        current_account_id = account_id  # Set global for callbacks
             
         # Select contract
         contract_id = select_contract(api_client)
@@ -327,23 +368,34 @@ def main():
         strategy = MeanReversionStrategy(strategy_config, trading_config)
         print("✅ Strategy initialized")
         
-        # Start UserHubStream for live trading
+        # Start UserHubStream for live trading - FIXED implementation
         if live_trading:
             print("\n📡 Starting order stream...")
-            user_stream = UserHubStream(
-                api_client=api_client,
-                account_id_to_watch=account_id,
-                on_order_update=handle_order_update,
-                on_position_update=handle_position_update,
-                subscribe_to_accounts_globally=False,
-                on_state_change_callback=handle_stream_state_change,
-                on_error_callback=handle_stream_error
-            )
-            
-            if user_stream.start():
-                print("✅ Order stream started")
-            else:
-                print("⚠️  Order stream failed - continuing without real-time updates")
+            try:
+                user_stream = UserHubStream(
+                    api_client=api_client,
+                    account_id_to_watch=account_id,  # Use integer account ID
+                    on_order_update=handle_user_order_update,  # Correct parameter name
+                    on_account_update=handle_user_account_update,  # Add this
+                    on_position_update=handle_user_position_update,  # Correct parameter name
+                    on_user_trade_update=handle_user_trade_execution,  # Correct parameter name
+                    subscribe_to_accounts_globally=False,  # Only watch specific account
+                    on_state_change_callback=handle_user_stream_state_change,
+                    on_error_callback=handle_user_stream_error
+                )
+                
+                if user_stream.start():
+                    print("✅ Order stream started")
+                    # Give it time to establish connection
+                    time.sleep(2)
+                else:
+                    logger.error("Failed to start UserHubStream")
+                    print("⚠️  Continuing without real-time order updates")
+                    user_stream = None
+                    
+            except Exception as e:
+                logger.error(f"Error initializing UserHubStream: {e}")
+                print("⚠️  Continuing without real-time order updates")
                 user_stream = None
         
         # Start market data stream
@@ -369,12 +421,15 @@ def main():
         except Exception as e:
             logger.error(f"Failed to initialize data stream: {e}")
             raise
+            
         print("\n🚀 Strategy is running!")
         print_commands()
         
         # Main loop
         last_status_time = time.time()
         status_interval = 30  # Status every 30 seconds
+        last_token_update = time.time()
+        token_update_interval = 1800  # 30 minutes
         
         while running:
             try:
@@ -390,10 +445,28 @@ def main():
                                   f"P&L: {status['live_pnl_points']:+.2f} (${status['live_pnl_dollars']:+.0f})")
                     last_status_time = time.time()
                 
+                # Token refresh
+                if time.time() - last_token_update > token_update_interval:
+                    logger.info("Refreshing tokens...")
+                    try:
+                        new_token = api_client.current_token
+                        if data_stream:
+                            data_stream.update_token(new_token)
+                        if user_stream:
+                            user_stream.update_token(new_token)
+                        last_token_update = time.time()
+                    except Exception as e:
+                        logger.error(f"Error refreshing tokens: {e}")
+                
                 # Check stream health
                 if data_stream and data_stream.connection_status == StreamConnectionState.ERROR:
                     logger.warning("Reconnecting data stream...")
                     data_stream.start()
+                
+                if user_stream and hasattr(user_stream, 'connection_status'):
+                    if user_stream.connection_status.name == 'ERROR':
+                        logger.warning("Reconnecting user stream...")
+                        user_stream.start()
                 
                 time.sleep(0.1)
                 
@@ -430,7 +503,8 @@ def main():
         if strategy:
             try:
                 # Ensure all positions are flat
-                if strategy.get_status()['position_side'] != 'FLAT':
+                status = strategy.get_status()
+                if status['position_side'] != 'FLAT':
                     logger.info("Flattening positions before shutdown...")
                     strategy.flatten_all_positions()
                     time.sleep(2)  # Give orders time to execute

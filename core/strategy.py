@@ -227,7 +227,7 @@ class MeanReversionStrategy:
                 order_id=order_id,
                 is_stop=True
             )
-            self.logger.info(f"Entry order placed: {side} STOP Market @ {price:.2f}")
+            self.logger.info(f"Entry order placed: {side} @ {price:.2f}")
 
             # Simulate immediate fill in sim mode
             if not self.trading_config.live_trading:
@@ -475,24 +475,38 @@ class MeanReversionStrategy:
         try:
             order_id = str(order_update.get('id', ''))
             status = order_update.get('status', -1)
+            
+            # Log the update
+            status_str = ORDER_STATUS_TO_STRING_MAP.get(status, f"UNKNOWN({status})")
+            self.logger.debug(f"Order update - ID: {order_id}, Status: {status_str}")
 
             # Update cache
             self._order_status_cache[order_id] = status
 
             # Check if it's one of our orders
             if order_id == self.state.entry_order.order_id:
-                if status == ORDER_STATUS_FILLED:
-                    fill_price = order_update.get('avgPx', self.state.entry_order.price)
+                if status == ORDER_STATUS_FILLED and not self.state.entry_order.is_filled():
+                    fill_price = order_update.get('avgPx', order_update.get('averageFillPrice', self.state.entry_order.price))
+                    filled_qty = order_update.get('cumQuantity', order_update.get('filledQuantity', self.state.entry_order.size))
+                    
+                    self.logger.info(f"🎯 Entry order FILLED: {self.state.entry_order.side} {filled_qty} @ {fill_price:.2f}")
+                    self.state.entry_order.state = OrderState.FILLED
                     self._handle_entry_fill(self.state.entry_order.side, fill_price)
+                    
                 elif status in [ORDER_STATUS_CANCELLED, ORDER_STATUS_REJECTED]:
+                    self.logger.info(f"Entry order {status_str}: ID {order_id}")
                     self.state.entry_order.reset()
 
             elif order_id == self.state.partial_exit_order.order_id:
-                if status == ORDER_STATUS_FILLED:
+                if status == ORDER_STATUS_FILLED and not self.state.partial_exit_order.is_filled():
+                    self.logger.info(f"🎯 Partial exit FILLED: ID {order_id}")
+                    self.state.partial_exit_order.state = OrderState.FILLED
                     self._handle_partial_exit_fill()
 
             elif order_id == self.state.full_exit_order.order_id:
-                if status == ORDER_STATUS_FILLED:
+                if status == ORDER_STATUS_FILLED and not self.state.full_exit_order.is_filled():
+                    self.logger.info(f"🎯 Full exit FILLED: ID {order_id}")
+                    self.state.full_exit_order.state = OrderState.FILLED
                     self._handle_full_exit_fill()
 
         except Exception as e:
@@ -501,14 +515,21 @@ class MeanReversionStrategy:
     def handle_position_update(self, position_update: Dict[str, Any]):
         """Handle position updates from UserHubStream"""
         try:
-            contract_id = position_update.get('contractId', '')
+            contract_id = str(position_update.get('contractId', ''))
             quantity = position_update.get('quantity', 0)
+            avg_price = position_update.get('averagePrice', 0.0)
 
-            if str(self.trading_config.contract_id) in str(contract_id):
+            # Check if this is our contract
+            if str(self.trading_config.contract_id) in contract_id:
+                self.logger.debug(f"Position update - Contract: {contract_id}, Qty: {quantity}, Avg: {avg_price:.2f}")
+
                 # Sync position if needed
                 if quantity == 0 and not self.state.is_flat():
                     self.logger.warning("Position sync: Account is flat but strategy has position - resetting")
                     self.state.reset_all()
+                elif quantity != 0 and self.state.is_flat():
+                    self.logger.warning(f"Position sync: Found position {quantity} @ {avg_price:.2f} but strategy is flat")
+                    # Optionally sync the position here
 
         except Exception as e:
             self.logger.error(f"Error handling position update: {e}")
