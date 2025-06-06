@@ -6900,3 +6900,86 @@
 2025-06-06 16:57:51,308 - tsxapipy.trading.order_handler - INFO - order_handler.py:70 - OrderPlacer initialized for Account ID: 6343905 with default contract: CON.F.US.EP.M25.
 2025-06-06 16:57:51,308 - tsxapipy.trading.order_handler - INFO - order_handler.py:70 - OrderPlacer initialized for Account ID: 6343905 with default contract: CON.F.US.EP.M25.
 2025-06-06 16:57:51,308 - tsxapipy.trading.order_handler - INFO - order_handler.py:70 - OrderPlacer initialized for Account ID: 6343905 with default contract: CON.F.US.EP.M25.
+2025-06-06 17:18:30,992 - tsxapipy.trading.order_handler - INFO - order_handler.py:153 - Placing SELL STOP order: 3 of CON.F.US.EP.M25 on account 6343905. Request Model Type: PlaceStopOrderRequest
+2025-06-06 17:18:30,992 - tsxapipy.trading.order_handler - INFO - order_handler.py:153 - Placing SELL STOP order: 3 of CON.F.US.EP.M25 on account 6343905. Request Model Type: PlaceStopOrderRequest
+2025-06-06 17:18:30,992 - tsxapipy.trading.order_handler - INFO - order_handler.py:153 - Placing SELL STOP order: 3 of CON.F.US.EP.M25 on account 6343905. Request Model Type: PlaceStopOrderRequest
+2025-06-06 17:18:30,993 - tsxapipy.trading.order_handler - DEBUG - order_handler.py:155 - OrderPlacer request model details: {
+  "accountId": 6343905,
+  "contractId": "CON.F.US.EP.M25",
+  "type": 4,
+  "side": 1,
+  "size": 3,
+  "stopPrice": 5994.0
+}
+2025-06-06 17:18:30,993 - tsxapipy.trading.order_handler - DEBUG - order_handler.py:155 - OrderPlacer request model details: {
+  "accountId": 6343905,
+  "contractId": "CON.F.US.EP.M25",
+  "type": 4,
+  "side": 1,
+  "size": 3,
+  "stopPrice": 5994.0
+}
+2025-06-06 17:18:30,993 - tsxapipy.trading.order_handler - DEBUG - order_handler.py:155 - OrderPlacer request model details: {
+  "accountId": 6343905,
+  "contractId": "CON.F.US.EP.M25",
+  "type": 4,
+  "side": 1,
+  "size": 3,
+  "stopPrice": 5994.0
+}
+2025-06-06 17:18:31,019 - tsxapipy.trading.order_handler - INFO - order_handler.py:160 - [ORDER PLACED SUCCESSFULLY] Type: SELL STOP, Size: 3, Contract: CON.F.US.EP.M25. API Order ID: 1220428360
+2025-06-06 17:18:31,019 - tsxapipy.trading.order_handler - INFO - order_handler.py:160 - [ORDER PLACED SUCCESSFULLY] Type: SELL STOP, Size: 3, Contract: CON.F.US.EP.M25. API Order ID: 1220428360
+2025-06-06 17:18:31,019 - tsxapipy.trading.order_handler - INFO - order_handler.py:160 - [ORDER PLACED SUCCESSFULLY] Type: SELL STOP, Size: 3, Contract: CON.F.US.EP.M25. API Order ID: 1220428360
+2025-06-06 17:20:00,039 - tsxapipy.trading.order_handler - ERROR - order_handler.py:290 - [MOD P/R] For order ID 1220428360: 1 validation error for ModifyOrderRequest
+  Value error, At least one modifiable field (size, limitPrice, stopPrice, trailPrice) must be provided for order modification. [type=value_error, input_value={'accountId': 6343905, 'o...5.0, 'trailPrice': None}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.11/v/value_error
+2025-06-06 17:20:00,039 - tsxapipy.trading.order_handler - ERROR - order_handler.py:290 - [MOD P/R] For order ID 1220428360: 1 validation error for ModifyOrderRequest
+  Value error, At least one modifiable field (size, limitPrice, stopPrice, trailPrice) must be provided for order modification. [type=value_error, input_value={'accountId': 6343905, 'o...5.0, 'trailPrice': None}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.11/v/value_error
+2025-06-06 17:20:00,039 - tsxapipy.trading.order_handler - ERROR - order_handler.py:290 - [MOD P/R] For order ID 1220428360: 1 validation error for ModifyOrderRequest
+  Value error, At least one modifiable field (size, limitPrice, stopPrice, trailPrice) must be provided for order modification. [type=value_error, input_value={'accountId': 6343905, 'o...5.0, 'trailPrice': None}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.11/v/value_error
+2025-06-06 17:22:00,043 - tsxapipy.trading.order_handler - ERROR - order_handler.py:290 - [MOD P/R] For order ID 1220428360: 1 validation error for ModifyOrderRequest
+  Value error, At least one modifiable field (size, limitPrice, stopPrice, trailPrice) must be provided for order modification. [type=value_error, input_value={'accountId': 6343905, 'o...7.0, 'trailPrice': None}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.11/v/value_error
+2025-06-06 17:22:00,043 - tsxapipy.trading.order_handler - ERROR - order_handler.py:290 - [MOD P/R] For order ID 1220428360: 1 validation error for ModifyOrderRequest
+  Value error, At least one modifiable field (size, limitPrice, stopPrice, trailPrice) must be provided for order modification. [type=value_error, input_value={'accountId': 6343905, 'o...7.0, 'trailPrice': None}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.11/v/value_error
+2025-06-06 17:22:00,043 - tsxapipy.trading.order_handler - ERROR - order_handler.py:290 - [MOD P/R] For order ID 1220428360: 1 validation error for ModifyOrderRequest
+  Value error, At least one modifiable field (size, limitPrice, stopPrice, trailPrice) must be provided for order modification. [type=value_error, input_value={'accountId': 6343905, 'o...7.0, 'trailPrice': None}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.11/v/value_error
+2025-06-06 17:24:00,041 - tsxapipy.trading.order_handler - ERROR - order_handler.py:290 - [MOD P/R] For order ID 1220428360: 1 validation error for ModifyOrderRequest
+  Value error, At least one modifiable field (size, limitPrice, stopPrice, trailPrice) must be provided for order modification. [type=value_error, input_value={'accountId': 6343905, 'o...9.5, 'trailPrice': None}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.11/v/value_error
+2025-06-06 17:24:00,041 - tsxapipy.trading.order_handler - ERROR - order_handler.py:290 - [MOD P/R] For order ID 1220428360: 1 validation error for ModifyOrderRequest
+  Value error, At least one modifiable field (size, limitPrice, stopPrice, trailPrice) must be provided for order modification. [type=value_error, input_value={'accountId': 6343905, 'o...9.5, 'trailPrice': None}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.11/v/value_error
+2025-06-06 17:24:00,041 - tsxapipy.trading.order_handler - ERROR - order_handler.py:290 - [MOD P/R] For order ID 1220428360: 1 validation error for ModifyOrderRequest
+  Value error, At least one modifiable field (size, limitPrice, stopPrice, trailPrice) must be provided for order modification. [type=value_error, input_value={'accountId': 6343905, 'o...9.5, 'trailPrice': None}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.11/v/value_error
+2025-06-06 17:26:00,640 - tsxapipy.trading.order_handler - ERROR - order_handler.py:290 - [MOD P/R] For order ID 1220428360: 1 validation error for ModifyOrderRequest
+  Value error, At least one modifiable field (size, limitPrice, stopPrice, trailPrice) must be provided for order modification. [type=value_error, input_value={'accountId': 6343905, 'o....75, 'trailPrice': None}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.11/v/value_error
+2025-06-06 17:26:00,640 - tsxapipy.trading.order_handler - ERROR - order_handler.py:290 - [MOD P/R] For order ID 1220428360: 1 validation error for ModifyOrderRequest
+  Value error, At least one modifiable field (size, limitPrice, stopPrice, trailPrice) must be provided for order modification. [type=value_error, input_value={'accountId': 6343905, 'o....75, 'trailPrice': None}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.11/v/value_error
+2025-06-06 17:26:00,640 - tsxapipy.trading.order_handler - ERROR - order_handler.py:290 - [MOD P/R] For order ID 1220428360: 1 validation error for ModifyOrderRequest
+  Value error, At least one modifiable field (size, limitPrice, stopPrice, trailPrice) must be provided for order modification. [type=value_error, input_value={'accountId': 6343905, 'o....75, 'trailPrice': None}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.11/v/value_error
+2025-06-06 17:28:00,587 - tsxapipy.trading.order_handler - ERROR - order_handler.py:290 - [MOD P/R] For order ID 1220428360: 1 validation error for ModifyOrderRequest
+  Value error, At least one modifiable field (size, limitPrice, stopPrice, trailPrice) must be provided for order modification. [type=value_error, input_value={'accountId': 6343905, 'o....25, 'trailPrice': None}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.11/v/value_error
+2025-06-06 17:28:00,587 - tsxapipy.trading.order_handler - ERROR - order_handler.py:290 - [MOD P/R] For order ID 1220428360: 1 validation error for ModifyOrderRequest
+  Value error, At least one modifiable field (size, limitPrice, stopPrice, trailPrice) must be provided for order modification. [type=value_error, input_value={'accountId': 6343905, 'o....25, 'trailPrice': None}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.11/v/value_error
+2025-06-06 17:28:00,587 - tsxapipy.trading.order_handler - ERROR - order_handler.py:290 - [MOD P/R] For order ID 1220428360: 1 validation error for ModifyOrderRequest
+  Value error, At least one modifiable field (size, limitPrice, stopPrice, trailPrice) must be provided for order modification. [type=value_error, input_value={'accountId': 6343905, 'o....25, 'trailPrice': None}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.11/v/value_error
+2025-06-06 17:32:40,132 - tsxapipy.auth - INFO - auth.py:114 - MODIFIED AUTHENTICATE FUNCTION CALLED - VERSION 2.0 (Corrected)
+2025-06-06 17:32:40,132 - tsxapipy.auth - INFO - auth.py:128 - Attempting authentication for user: mjcasanova13...
+2025-06-06 17:32:40,132 - tsxapipy.auth - DEBUG - auth.py:48 - Initial Key Authentication HTTP Call: URL='https://api.topstepx.com/api/Auth/loginKey', PayloadKeys='['userName', 'apiKey']'
+2025-06-06 17:32:40,322 - tsxapipy.auth - INFO - auth.py:61 - Initial Key Authentication HTTP Call successful.
+2025-06-06 17:32:40,322 - tsxapipy.auth - INFO - auth.py:138 - Authentication successful. Token acquired at: 2025-06-06T17:32:40.322713+00:00
+2025-06-06 17:32:46,608 - tsxapipy.trading.order_handler - INFO - order_handler.py:70 - OrderPlacer initialized for Account ID: 6343905 with default contract: CON.F.US.EP.M25.
+2025-06-06 17:32:46,608 - tsxapipy.trading.order_handler - INFO - order_handler.py:70 - OrderPlacer initialized for Account ID: 6343905 with default contract: CON.F.US.EP.M25.
+2025-06-06 17:32:46,608 - tsxapipy.trading.order_handler - INFO - order_handler.py:70 - OrderPlacer initialized for Account ID: 6343905 with default contract: CON.F.US.EP.M25.

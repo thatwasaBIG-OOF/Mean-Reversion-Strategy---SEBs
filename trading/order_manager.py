@@ -250,6 +250,10 @@ class OrderManager:
 
     def modify_order_price(self, order_info: OrderInfo, new_price: float) -> bool:
         """Modify order price - ONLY logs critical errors, no debug spam"""
+        if new_price is None or new_price <= 0:
+            self.logger.error(f"Invalid new_price: {new_price}")
+            return False
+    
         if not order_info.order_id:
             return False
             
@@ -274,9 +278,23 @@ class OrderManager:
                 }
                 
                 if order_info.is_stop:
-                    modify_params["new_stop_price"] = new_price
+                    self.logger.info(f"Calling modify_order with order_id={order_id_int}, new_stop_price={new_price}")
+                    success = self.order_placer.modify_order(
+                        order_id=order_id_int,
+                        new_stop_price=new_price,
+                        new_limit_price=None,  # Explicitly set to None
+                        new_size=None,
+                        new_trail_price=None
+        )
                 else:
-                    modify_params["new_limit_price"] = new_price
+                    self.logger.info(f"Calling modify_order with order_id={order_id_int}, new_limit_price={new_price}")
+                    success = self.order_placer.modify_order(
+                        order_id=order_id_int,
+                        new_limit_price=new_price,
+                        new_stop_price=None,   # Explicitly set to None
+                        new_size=None,
+                        new_trail_price=None
+                    )
                 
                 success = self.order_placer.modify_order(**modify_params)
                 
