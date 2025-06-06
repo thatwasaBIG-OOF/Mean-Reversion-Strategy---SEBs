@@ -144,7 +144,7 @@ class PlaceLimitOrderRequest(OrderBase):
     limit_price: float = Field(..., alias="limitPrice", gt=0)
 
 class PlaceStopOrderRequest(OrderBase): # Assuming this is Stop Market
-    type: Literal[3] = 3 # Stop order type is 3 (assuming Stop Market)
+    type: Literal[4] = 4 # Stop order type is 3 (assuming Stop Market)
     stop_price: float = Field(..., alias="stopPrice", gt=0)
 
 # If TRAILING_STOP is type 5, and you want to support it directly:

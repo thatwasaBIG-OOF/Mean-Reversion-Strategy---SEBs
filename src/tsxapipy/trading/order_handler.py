@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 ORDER_TYPES_MAP: Dict[str, int] = {
     "LIMIT": 1,
     "MARKET": 2,
-    "STOP": 3, # Stop Market (API type 3 appears to be Stop Market based on common usage)
+    "STOP": 4, # Stop Market (API type 3 appears to be Stop Market based on common usage)
     # API Docs also mention: TRAILING_STOP: 5, JOIN_BID: 6, JOIN_ASK: 7
     # To support these, add them to the map and create specific placer methods if desired.
 }
