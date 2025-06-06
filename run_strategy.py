@@ -2,10 +2,11 @@
 Main entry point for the mean reversion trading strategy.
 Fixed version with proper UserHubStream integration.
 """
-
+import logging
 import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
+import traceback
 
 import logging
 import time
@@ -22,13 +23,61 @@ from tsxapipy.real_time.user_hub_stream import UserHubStream
 from config.settings import StrategyConfig, TradingConfig
 from core.strategy import MeanReversionStrategy
 
-# Configure logging
+# AGGRESSIVE logging suppression - add this FIRST
+def silence_all_debug_logging():
+    """Aggressively silence all debug and info logging except critical errors"""
+    
+    # Set root logger to WARNING only
+    logging.getLogger().setLevel(logging.WARNING)
+    
+    # Specifically silence these noisy loggers
+    noisy_loggers = [
+        'tsxapipy',
+        'tsxapipy.api',
+        'tsxapipy.api.client',
+        'tsxapipy.real_time',
+        'tsxapipy.real_time.data_stream',
+        'tsxapipy.real_time.data_stream.DataStream',
+        'tsxapipy.real_time.user_hub_stream',
+        'websocket',
+        'signalrcore',
+        'urllib3',
+        'requests',
+        'requests.packages.urllib3',
+        'urllib3.connectionpool',
+    ]
+    
+    for logger_name in noisy_loggers:
+        logger = logging.getLogger(logger_name)
+        logger.setLevel(logging.ERROR)  # Only show errors
+        logger.propagate = False  # Don't propagate to parent loggers
+    
+    # Only allow our specific loggers to show important messages
+    allowed_loggers = [
+        '__main__',
+        'core.strategy',
+        'trading.order_manager',
+        'CRITICAL_TRADING_ERRORS'
+    ]
+    
+    for logger_name in allowed_loggers:
+        logger = logging.getLogger(logger_name)
+        logger.setLevel(logging.INFO)
+
+# Call this IMMEDIATELY
+silence_all_debug_logging()
+
+# Now configure basic logging for our messages only
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.WARNING,  # Root level is WARNING
     format='%(asctime)s - %(name)s - %(message)s',
-    datefmt='%H:%M:%S'
+    datefmt='%H:%M:%S',
+    force=True  # Override any existing configuration
 )
+
+# Allow our main logger to show INFO
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 # Reduce noise from external libraries
 for lib in ['tsxapipy', 'websocket', 'signalrcore', 'urllib3', 'requests']:
@@ -116,6 +165,41 @@ def handle_stream_state_change(state_str: str):
         logger.info(f"DataStream state: {state_str}")
     else:
         logger.warning(f"Unexpected state type: {type(state_str)} - {state_str}")
+
+def setup_enhanced_logging():
+    """Setup enhanced logging with full exception details"""
+    
+    # Create a detailed formatter
+    detailed_formatter = logging.Formatter(
+        '%(asctime)s - %(name)s - %(levelname)s - %(filename)s:%(lineno)d - %(message)s'
+    )
+    
+    # Set all tsxapipy loggers to DEBUG
+    for logger_name in ['tsxapipy', 'tsxapipy.trading', 'tsxapipy.trading.order_handler']:
+        logger = logging.getLogger(logger_name)
+        logger.setLevel(logging.DEBUG)
+        
+        # Add a file handler for detailed logs
+        file_handler = logging.FileHandler('detailed_trading.log')
+        file_handler.setFormatter(detailed_formatter)
+        logger.addHandler(file_handler)
+
+def exception_handler(exc_type, exc_value, exc_traceback):
+    """Global exception handler to log full details"""
+    if issubclass(exc_type, KeyboardInterrupt):
+        sys.__excepthook__(exc_type, exc_value, exc_traceback)
+        return
+    
+    logger.error("Uncaught exception", exc_info=(exc_type, exc_value, exc_traceback))
+    
+    # Log full traceback
+    tb_lines = traceback.format_exception(exc_type, exc_value, exc_traceback)
+    for line in tb_lines:
+        logger.error(line.rstrip())
+
+# Add this to your main() function
+sys.excepthook = exception_handler
+setup_enhanced_logging()
 
 
 def handle_stream_error(error: Any):

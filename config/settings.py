@@ -57,7 +57,7 @@ class StrategyConfig:
     exit_order_update_threshold: float = 0.25
 
     # Daily Limits
-    max_daily_trades: int = 10
+    max_daily_trades: int = 30
     max_daily_loss: float = 1000.0
 
     # Market Data

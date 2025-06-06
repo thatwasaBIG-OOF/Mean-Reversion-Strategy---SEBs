@@ -287,7 +287,7 @@ class OrderPlacer:
                 logger.error(f"[MODIFY FAILED - API REJECTED] Order ID: {order_id}. Reason: {response_model.error_message or 'Unknown'} (Code: {response_model.error_code})")
                 return False
         except ValidationError as pydantic_val_err: # Catch Pydantic validation error for request or response
-            logger.error(f"[MODIFY PREPARATION/RESPONSE VALIDATION ERROR] For order ID {order_id}: {pydantic_val_err}")
+            logger.error(f"[MOD P/R] For order ID {order_id}: {pydantic_val_err}")
             return False
         except APIResponseParsingError as rpe:
             logger.error(f"[MODIFY RESPONSE PARSING ERROR] For order ID {order_id}: {rpe}")

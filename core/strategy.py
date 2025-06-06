@@ -15,6 +15,11 @@ from trading.order_manager import OrderManager
 from utils.price_utils import PriceUtils
 from utils.trade_logger import TradeLogger
 
+try:
+    from tsxapipy import api_schemas
+except ImportError:
+    api_schemas = None
+
 # Import TSX API constants
 try:
     from tsxapipy.trading import (
@@ -136,6 +141,11 @@ class MeanReversionStrategy:
             if not self.trading_config.live_trading:
                 self._check_for_fills()
 
+            else:
+                # For live trading, check positions every N ticks to detect fills
+                if self._tick_count % 30 == 0:  # Check every 10 ticks
+                    self._check_position_changes()
+
             # Process strategy logic
             if self.seb_bands:
                 if self.state.is_flat() and not self.state.has_pending_orders():
@@ -188,8 +198,9 @@ class MeanReversionStrategy:
         if not self.seb_bands:
             return
 
-        # Check if in exit cooldown
-        if self.state.should_block_entry(self._last_signal, self.config.entry_order_cooldown_seconds):
+        # Check if in exit cooldown - fix type issue by providing default
+        signal_to_check = self._last_signal if self._last_signal is not None else ""
+        if self.state.should_block_entry(signal_to_check, self.config.entry_order_cooldown_seconds):
             return
 
         # Get signal
@@ -232,6 +243,71 @@ class MeanReversionStrategy:
             # Simulate immediate fill in sim mode
             if not self.trading_config.live_trading:
                 self._handle_entry_fill(side, price)
+
+    def _check_position_changes(self):
+        """Check for position changes to detect filled orders"""
+        if not self.trading_config.live_trading or not self.trading_config.api_client:
+            return
+        
+        # Validate account_id before using it
+        if not self.trading_config.account_id:
+            self.logger.error("Account ID is not set - cannot check positions")
+            return
+            
+        try:
+            account_id_int = int(self.trading_config.account_id)
+            
+            # Call the API with proper parameters according to the docs
+            positions = self.trading_config.api_client.search_open_positions(
+                account_id=account_id_int,
+                # The API might require additional parameters based on the docs
+                # If the docs show other required params, add them here
+            )
+            
+            # Find position for our contract
+            our_position = None
+            for pos in positions:
+                if str(pos.contract_id) == str(self.trading_config.contract_id):
+                    our_position = pos
+                    break
+            
+            current_size = our_position.size if our_position and our_position.size is not None else 0
+            current_avg_price = our_position.average_price if our_position and our_position.average_price is not None else 0.0
+            
+            # Detect entry fill
+            if self.state.is_flat() and current_size != 0 and self.state.entry_order.is_pending():
+                side = 'BUY' if current_size > 0 else 'SELL'
+                self.logger.info(f"🎯 Entry detected via position: {side} {abs(current_size)} @ {current_avg_price:.2f}")
+                self.state.entry_order.state = OrderState.FILLED
+                self._handle_entry_fill(side, current_avg_price)
+                
+            # Detect partial exit
+            elif not self.state.is_flat() and self.state.partial_exit_order.is_pending():
+                expected_size_after_partial = self.state.position_size - self.config.partial_exit_size
+                if abs(current_size) == abs(expected_size_after_partial):
+                    self.logger.info(f"🎯 Partial exit detected via position change")
+                    self.state.partial_exit_order.state = OrderState.FILLED
+                    self._handle_partial_exit_fill()
+                    
+            # Detect full exit
+            elif not self.state.is_flat() and current_size == 0:
+                if self.state.full_exit_order.is_pending():
+                    self.logger.info(f"🎯 Full exit detected via position closure")
+                    self.state.full_exit_order.state = OrderState.FILLED
+                    self._handle_full_exit_fill()
+                else:
+                    # Position was closed by some other means
+                    self.logger.warning("Position closed externally - resetting strategy state")
+                    self.state.reset_all()
+                    
+        except ValueError as e:
+            self.logger.error(f"Error converting account_id to int: {e}")
+        except Exception as e:
+            # Log the full error details for debugging
+            self.logger.error(f"Error checking position changes: {type(e).__name__}: {e}")
+            # If it's a 503 error, it might be temporary - don't crash
+            if "503" in str(e):
+                self.logger.warning("API temporarily unavailable (503) - will retry on next tick")
 
     def _handle_entry_fill(self, side: str, fill_price: float):
         """Handle entry order fill"""
@@ -589,7 +665,7 @@ class MeanReversionStrategy:
             f"Duration: {duration:.1f}m | "
             f"Daily: {self.state.daily_pnl:+.2f}pts"
         )
-
+        
     def flatten_all_positions(self) -> bool:
         """Emergency flatten all positions"""
         try:
@@ -599,7 +675,29 @@ class MeanReversionStrategy:
 
             self._cancel_exit_orders()
 
-            # Close position if any
+            # For live trading, check actual positions and close them
+            if self.trading_config.live_trading and self.trading_config.api_client and self.trading_config.account_id is not None:
+                try:
+                    account_id_int = int(self.trading_config.account_id)
+                    positions = self.trading_config.api_client.search_open_positions(account_id=account_id_int)
+                    
+                    for pos in positions:
+                        if pos.contract_id is not None and str(pos.contract_id) == str(self.trading_config.contract_id) and pos.size != 0:
+                            self.logger.warning(f"Closing live position: {pos.size} @ {pos.average_price}")
+                            # Use the close_contract_position method from the example
+                            response = self.trading_config.api_client.close_contract_position(
+                                account_id=account_id_int,
+                                contract_id=pos.contract_id
+                            )
+                            if response.success:
+                                self.logger.info(f"Position close request submitted: {response.message}")
+                            else:
+                                self.logger.error(f"Failed to close position: {response.error_message}")
+                                
+                except Exception as e:
+                    self.logger.error(f"Error closing live positions: {e}")
+            
+            # Close position if any in strategy state
             if not self.state.is_flat():
                 self._emergency_exit(self.current_price, ExitReason.MANUAL_FLATTEN)
 
